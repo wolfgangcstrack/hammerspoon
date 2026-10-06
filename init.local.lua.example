@@ -23,9 +23,9 @@ local cac = { "ctrl", "alt", "cmd" }
 -- wm.bind(cac, "up", wm.throw(0, true))
 -- wm.bind(cac, "down", wm.throw(1, true))
 
--- Let the desktop drag in snapshot restores move a browser's windows too
--- (off by default: grabbing the title bar can pull a tab out instead).
--- wm.noDrag["com.google.Chrome"] = nil
+-- Keep snapshot restores from dragging an app's windows between desktops
+-- (by bundle ID); they stay where they are and are listed in the alert.
+-- wm.noDrag["com.google.Chrome"] = true
 
 -- Add an app to a layout: wm.layouts[n] is the layout for n displays, a list
 -- of steps that run in order. Each step maps an app name to the operations
