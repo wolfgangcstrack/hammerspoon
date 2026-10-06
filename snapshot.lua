@@ -50,6 +50,22 @@ return function(wm)
     return ids
   end
 
+  -- Which desktop a window is on: the Space ID, plus the desktop's position
+  -- among its display's desktops, for restoring onto a different monitor
+  -- whose Spaces have other IDs. `screenName` is the display it sits on.
+  -- Works for windows on desktops that are not showing, too.
+  local function spaceOf(id)
+    local space = (hs.spaces.windowSpaces(id) or {})[1]
+    if not space then return nil end
+    local uuid = hs.spaces.spaceDisplay(space)
+    local screen = uuid and hs.screen.find(uuid)
+    local r = { id = space, screenName = screen and screen:name() }
+    for i, s in ipairs(uuid and hs.spaces.spacesForScreen(uuid) or {}) do
+      if s == space then r.index = i end
+    end
+    return r
+  end
+
   local function describe(win)
     local s, f, app = win:screen(), win:frame(), win:application()
     local sf = s:frame()
@@ -59,6 +75,7 @@ return function(wm)
       name = app:name(),
       title = win:title(),
       screen = { name = s:name(), builtin = isBuiltin(s) },
+      space = spaceOf(win:id()),
       unit = {
         x = (f.x - sf.x) / sf.w, y = (f.y - sf.y) / sf.h,
         w = f.w / sf.w, h = f.h / sf.h,
@@ -78,11 +95,33 @@ return function(wm)
     return best
   end
 
+  -- The desktop on screen `s` a saved window belongs on: the same Space if it
+  -- is still on that display, else the desktop in the same position there.
+  local function targetSpace(s, saved)
+    if not saved then return nil end
+    local order = hs.spaces.spacesForScreen(s) or {}
+    for _, space in ipairs(order) do
+      if space == saved.id then return space end
+    end
+    return saved.index and order[saved.index]
+  end
+
+  -- Desktop moves macOS refused during the last restore, for the alert.
+  local moveErrors
+
+  -- Size and position first, which lands the window on whichever desktop is
+  -- showing on that screen, then move it to its own desktop if that is a
+  -- different one.
   local function place(win, entry)
     local s = findScreen(entry.screen)
     if not s then return end
     local sf, u = s:frame(), entry.unit
     win:setFrame({ x = sf.x + u.x * sf.w, y = sf.y + u.y * sf.h, w = u.w * sf.w, h = u.h * sf.h })
+    local space = targetSpace(s, entry.space)
+    if space and (hs.spaces.windowSpaces(win) or {})[1] ~= space then
+      local ok, err = hs.spaces.moveWindowToSpace(win, space)
+      if not ok then moveErrors[#moveErrors + 1] = entry.name .. ": " .. tostring(err) end
+    end
   end
 
   -- Save the visible windows into this display count's snapshot. `fresh`
@@ -99,7 +138,16 @@ return function(wm)
     if not fresh and data[k] then
       local live = liveIds()
       for _, e in ipairs(data[k].windows) do
-        if not seen[e.id] and (not live or live[e.id]) then entries[#entries + 1] = e end
+        if not seen[e.id] and (not live or live[e.id]) then
+          -- Not showing, so its position is as saved, but its desktop can
+          -- still be read. Only trust it while the window is on the same
+          -- display it was saved on; a desktop that migrated to another
+          -- display when a monitor was unplugged says nothing about where
+          -- the window belongs.
+          local space = spaceOf(e.id)
+          if space and space.screenName == e.screen.name then e.space = space end
+          entries[#entries + 1] = e
+        end
       end
     end
     data[k] = { savedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"), windows = entries }
@@ -115,6 +163,7 @@ return function(wm)
     local snap = load()[key()]
     if not snap then return nil end
     skip = skip or {}
+    moveErrors = {}
     local live = liveIds() or {}
     local byId, used, placed, leftover = {}, {}, {}, {}
     for _, e in ipairs(snap.windows) do byId[e.id] = e end
@@ -146,6 +195,9 @@ return function(wm)
       local title = win:title()
       local _ = claim(win, function(e) return title ~= "" and e.title == title end)
         or claim(win, function() return true end)
+    end
+    if #moveErrors > 0 then
+      hs.alert.show("Could not move to their desktop:\n" .. table.concat(moveErrors, "\n"), 8)
     end
     return placed
   end
