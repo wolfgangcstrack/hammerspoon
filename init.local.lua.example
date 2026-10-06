@@ -1,0 +1,33 @@
+-- Template for ~/.hammerspoon/init.local.lua -- copy it, do not edit it in place:
+--
+--   cp hammerspoon/.hammerspoon/init.local.lua.example \
+--      hammerspoon/.hammerspoon/init.local.lua
+--   make link PKG=hammerspoon
+--
+-- hammerspoon/.hammerspoon/init.local.lua is gitignored and holds what is
+-- true for one machine only. init.lua loads it after every shared binding and
+-- passes in its helper table, so a bind here shadows the shared bind on the
+-- same key combination (the Hammerspoon console logs "Disabled previous
+-- hotkey" when that happens).
+--
+-- Directional throws depend on how macOS has the displays arranged. Side by
+-- side monitors have nothing above or below, so `throw("North")` does nothing
+-- and the screen has to be named by index instead. Index 0 is the primary
+-- display (the one with the menu bar in System Settings > Displays), then
+-- macOS's order, not left-to-right.
+
+local wm = ...
+local cac = { "ctrl", "alt", "cmd" }
+
+-- Throw to an explicit display rather than a direction.
+-- wm.bind(cac, "up", wm.throw(0, true))
+-- wm.bind(cac, "down", wm.throw(1, true))
+
+-- Keep layouts hotkey-only instead of re-running them when a display is
+-- plugged in or removed.
+-- wm.autoLayout = false
+
+-- Add an app to a layout: wm.layouts[n] is the layout for n displays, a list
+-- of steps that run in order. Each step maps an app name to the operations
+-- for its windows, first operation to the first window.
+-- wm.layouts[2][1]["Cursor"] = { wm.throw(1, true) }
