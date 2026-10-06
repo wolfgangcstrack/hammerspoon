@@ -287,6 +287,16 @@ return function(wm)
   -- of its own, so show the window's desktop on one and its target on the
   -- other, then move it over. Showing its desktop is also what makes the
   -- window reachable at all.
+  -- Windows the snapshot does not know (see matchWindows()) are only moved
+  -- once they turn out to be ordinary windows: an app's hidden helper and
+  -- minimized windows look the same until their desktop is showing.
+  local function skipExtra(e, win)
+    if e.extra and not (win and win:isStandard() and not win:isMinimized()) then
+      log("  skipped %s window %d: not an ordinary window", e.name, e.id)
+      return true
+    end
+  end
+
   local function moveAcross(group, nextJob)
     local active = activeSpaces()
     for _, space in ipairs({ group.source, group.target }) do
@@ -296,6 +306,7 @@ return function(wm)
     after(0.8, function()
       for _, e in ipairs(group) do
         local win = hs.window.get(e.id)
+        if skipExtra(e, win) then goto continue end
         if win then place(win, e) end
         log("across %s (window %d): desktop %s -> %s, now on %s", e.name, e.id,
           tostring(group.source), tostring(group.target), tostring(spaceOfWindow(e.id)))
@@ -304,6 +315,7 @@ return function(wm)
         else
           moveErrors[#moveErrors + 1] = e.name
         end
+        ::continue::
       end
       nextJob()
     end)
@@ -378,6 +390,7 @@ return function(wm)
     if not activeSpaces()[source] then hs.spaces.gotoSpace(source) end
     after(0.8, function()
       local win = hs.window.get(e.id)
+      if skipExtra(e, win) then return nextJob() end
       local desks = hs.spaces.spacesForScreen(hs.spaces.spaceDisplay(source)) or {}
       local from, to = indexOf(desks, source), indexOf(desks, target)
       log("drag %s (window %d): desktop %s -> %s, positions %s -> %s of [%s]", e.name, e.id,
@@ -502,7 +515,10 @@ return function(wm)
   -- IDs and take the app's saved slots, by title first, then largest window
   -- first (an app's small extra windows are panels and popups). Returns
   -- copies of the saved entries carrying the open window's ID; saved
-  -- windows with no open match are left out.
+  -- windows with no open match are left out. Open windows of a saved app
+  -- beyond its saved ones (a third Cursor window) join the app: they go to
+  -- the saved desktop with most of its windows, sized like the first of
+  -- them there.
   local function matchWindows(entries)
     local open, byId = {}, {}
     for _, w in ipairs(hs.window.list and hs.window.list(true) or {}) do
@@ -542,6 +558,31 @@ return function(wm)
         r[#r + 1] = setmetatable({ id = pairsFound[e] }, { __index = e })
       else
         log("not open: %s (saved window %d)", e.name, e.id)
+      end
+    end
+
+    -- Each app's home: the saved desktop holding most of its windows, the
+    -- earliest on a tie, represented by its first window there.
+    local home = {}
+    for _, e in ipairs(entries) do
+      if e.space then
+        local h = home[e.app] or { counts = {}, first = {} }
+        home[e.app] = h
+        local k = e.space.id
+        h.counts[k] = (h.counts[k] or 0) + 1
+        h.first[k] = h.first[k] or e
+        local best = h.best and h.first[h.best]
+        if not best or h.counts[k] > h.counts[h.best]
+          or (h.counts[k] == h.counts[h.best] and (e.space.index or math.huge) < (best.space.index or math.huge)) then
+          h.best = k
+        end
+      end
+    end
+    table.sort(open, function(a, b) return a.id < b.id end)
+    for _, o in ipairs(open) do
+      local h = not taken[o.id] and home[o.app]
+      if h then
+        r[#r + 1] = setmetatable({ id = o.id, extra = true }, { __index = h.first[h.best] })
       end
     end
     return r
@@ -618,7 +659,7 @@ return function(wm)
     local function visitDesktops(done)
       local desks, seen = {}, {}
       for _, e in ipairs(snap.windows) do
-        local space = not positioned[e.id] and live[e.id] and spaceOfWindow(e.id)
+        local space = not e.extra and not positioned[e.id] and live[e.id] and spaceOfWindow(e.id)
         if space and not seen[space] and hs.spaces.spaceType(space) == "user" then
           desks[#desks + 1], seen[space] = space, true
         end
