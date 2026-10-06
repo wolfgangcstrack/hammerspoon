@@ -1,105 +1,51 @@
--- Window snapshots: save where every window sits, put them back later.
+-- Desktop maps: which apps live on which desktop, and a hotkey to put every
+-- window back there.
 --
--- One snapshot per display count, so "laptop alone" and "laptop + monitor"
--- are separate arrangements. Positions are stored as fractions of the screen
--- each window was on, and screens are matched by name first, then by role
--- (built-in, or the largest external), so a snapshot taken at one desk
--- restores onto a different monitor at another.
+-- One map per display count, so "laptop alone" and "laptop + monitor" are
+-- separate arrangements. A map lists each display's desktops in order and
+-- the apps on each, by app name or bundle ID:
 --
--- Only windows on the Spaces currently showing can be measured, so a save
--- MERGES into the stored snapshot instead of replacing it: visit each desktop
--- and save once to cover them all. Restore also puts windows back on their own
--- desktop, which takes some indirection on recent macOS (see moveAcross() and
--- dragAlong()). Nothing runs on its own: ctrl+alt+cmd+r restores.
+--   "2": { "displays": [
+--     { "name": "Built-in Retina Display", "builtin": true,
+--       "desktops": [ ["Granola", "Notion", "Slack"], ["Postico 2"] ] },
+--     { "name": "MSI MPG341CQR", "builtin": false,
+--       "desktops": [ ["Google Chrome"], ["Claude", "Cursor"] ] } ] }
 --
--- Stored in ~/.hammerspoon/window-snapshots.json, a real file on each machine
--- rather than a link into the repo, since the windows are this Mac's.
+-- Restore moves every window of a listed app to its desktop by position, so
+-- the outcome depends only on the map: no window IDs or titles, and desktop 2
+-- stays desktop 2 even when nothing on desktop 1 is open. Displays are
+-- matched by name, then by role (built-in, or the largest external), so a
+-- map saved at one desk restores onto a different monitor at another.
+-- Window sizes are left alone, except that a window carried to another
+-- display keeps its place relative to the screen.
+--
+-- ctrl+alt+cmd+s writes the map from where windows are now (apps not running
+-- keep their saved desktop; +shift forgets them), and ctrl+alt+cmd+r
+-- restores. Nothing runs on its own. The map lives in
+-- ~/.hammerspoon/desktops.json, a real file on each machine rather than a
+-- link into the repo, and is meant to be edited by hand too.
 
 return function(wm)
-  local path = hs.configdir .. "/window-snapshots.json"
-
+  local path = hs.configdir .. "/desktops.json"
   local function isBuiltin(screen) return screen:name():match("^Built%-in") ~= nil end
   local function area(screen) local f = screen:fullFrame() return f.w * f.h end
   local function key() return tostring(#hs.screen.allScreens()) end
   local function load() return hs.json.read(path) or {} end
 
-  -- Windows worth saving: standard, visible on a Space that is showing, and
-  -- not Hammerspoon's own console or alerts.
-  local function visibleWindows()
-    local r = {}
-    for _, win in ipairs(hs.window.visibleWindows()) do
-      local app = win:application()
-      if win:isStandard() and app and app:bundleID() ~= "org.hammerspoon.Hammerspoon" then
-        r[#r + 1] = win
-      end
-    end
-    return r
+  -- What the last save or restore did, step by step, in
+  -- ~/.hammerspoon/restore.log: desktop moves happen out of sight and too
+  -- fast to watch, and this is how to tell a shortcut that did not fire from
+  -- a window that did not follow. Each line is written as it happens, so a
+  -- restore that stops partway still shows how far it got.
+  local logPath = hs.configdir .. "/restore.log"
+  local function log(fmt, ...)
+    local f = io.open(logPath, "a")
+    if f then f:write(os.date("%H:%M:%S "), string.format(fmt, ...), "\n") f:close() end
   end
-
-  -- IDs of every open window on every Space, or nil if macOS will not say.
-  -- Lets a save drop windows that have since closed, and keeps a restore from
-  -- handing a still-open window's slot to a different one.
-  local function liveIds()
-    local spaces = hs.spaces.allSpaces()
-    if not spaces then return nil end
-    local ids = {}
-    for _, list in pairs(spaces) do
-      for _, space in ipairs(list) do
-        for _, id in ipairs(hs.spaces.windowsForSpace(space) or {}) do ids[id] = true end
-      end
-    end
-    return ids
+  local function clearLog()
+    local f = io.open(logPath, "w")
+    if f then f:close() end
   end
-
-  -- Which desktop a window is on: the Space ID, plus the desktop's position
-  -- among its display's desktops, for restoring onto a different monitor
-  -- whose Spaces have other IDs. `screenName` is the display it sits on.
-  -- Works for windows on desktops that are not showing, too.
-  local function spaceOf(id)
-    local space = (hs.spaces.windowSpaces(id) or {})[1]
-    if not space then return nil end
-    local uuid = hs.spaces.spaceDisplay(space)
-    local screen = uuid and hs.screen.find(uuid)
-    local r = { id = space, screenName = screen and screen:name() }
-    for i, s in ipairs(uuid and hs.spaces.spacesForScreen(uuid) or {}) do
-      if s == space then r.index = i end
-    end
-    return r
-  end
-
-  local function describe(win)
-    local s, f, app = win:screen(), win:frame(), win:application()
-    local sf = s:frame()
-    return {
-      id = win:id(),
-      app = app:bundleID() or app:name(),
-      name = app:name(),
-      title = win:title(),
-      screen = { name = s:name(), builtin = isBuiltin(s) },
-      space = spaceOf(win:id()),
-      unit = {
-        x = (f.x - sf.x) / sf.w, y = (f.y - sf.y) / sf.h,
-        w = f.w / sf.w, h = f.h / sf.h,
-      },
-    }
-  end
-
-  local function findScreen(spec)
-    local screens = hs.screen.allScreens()
-    for _, s in ipairs(screens) do
-      if s:name() == spec.name then return s end
-    end
-    local best
-    for _, s in ipairs(screens) do
-      if isBuiltin(s) == spec.builtin and (not best or area(s) > area(best)) then best = s end
-    end
-    return best
-  end
-
-  -- State for the restore in progress: windows that did not reach their
-  -- desktop, for the alert; desktops windows were moved off, candidates for
-  -- removal; and whether adding a desktop left Mission Control open.
-  local moveErrors, vacated, missionControlOpen
 
   local function spaceOfWindow(id) return (hs.spaces.windowSpaces(id) or {})[1] end
 
@@ -123,94 +69,164 @@ return function(wm)
     return r
   end
 
-  -- Which desktop each saved window goes to now, by position alone, so the
-  -- outcome is the same whatever the starting state: a display's saved
-  -- desktops, in their saved order, go to its 1st, 2nd, ... desktop, with
-  -- desktops added when there are too few. Windows saved on one desktop stay
-  -- together. Returns entry -> Space ID, and display UUID -> how many
-  -- desktops the snapshot fills there; removeEmptied() clears out the rest.
-  local function assignDesktops(snap)
-    local byScreen = {}
-    for _, e in ipairs(snap.windows) do
-      local s = e.space and spaceOfWindow(e.id) and findScreen(e.screen)
-      if s then
-        local b = byScreen[s:name()] or { screen = s, groups = {}, order = {} }
-        byScreen[s:name()] = b
-        local k = tostring(e.space.id)
-        if not b.groups[k] then
-          b.groups[k] = { saved = e.space, entries = {} }
-          b.order[#b.order + 1] = b.groups[k]
+  -- The screen a saved display is now: same name, else same role (the
+  -- largest one), skipping screens in `used`, display UUID -> true.
+  local function findScreen(spec, used)
+    local screens = hs.screen.allScreens()
+    for _, s in ipairs(screens) do
+      if s:name() == spec.name and not used[s:getUUID()] then return s end
+    end
+    local best
+    for _, s in ipairs(screens) do
+      if not used[s:getUUID()] and isBuiltin(s) == spec.builtin and (not best or area(s) > area(best)) then
+        best = s
+      end
+    end
+    return best
+  end
+
+  -- Where a desktop is, for the log and alerts: "MSI MPG341CQR desktop 2".
+  local function describeSpace(space)
+    local uuid = space and hs.spaces.spaceDisplay(space)
+    local screen = uuid and hs.screen.find(uuid)
+    local i = uuid and indexOf(userDesktops(uuid), space)
+    return string.format("%s desktop %s", screen and screen:name() or "?", tostring(i or space))
+  end
+
+  -- Every open window of an ordinary app that sits on exactly one regular
+  -- desktop, on any display, showing or not: { id, app, name, bundle, space,
+  -- real }. Windows on a showing desktop come from Accessibility, which
+  -- knows a real window from an app's hidden helpers and minimized ones.
+  -- Windows on the other desktops can only be seen in the window server's
+  -- list, which has those helpers too; small ones are dropped here, and
+  -- `real` is false so a restore checks each once its desktop is showing.
+  local function openWindows()
+    local r, seen = {}, {}
+    local function add(id, app, real)
+      if seen[id] or not app or app:bundleID() == "org.hammerspoon.Hammerspoon" then return end
+      local spaces = hs.spaces.windowSpaces(id) or {}
+      if #spaces ~= 1 or hs.spaces.spaceType(spaces[1]) ~= "user" then
+        if real and #spaces == 0 then log("no desktop for %s window %d; left alone", app:name(), id) end
+        return
+      end
+      seen[id] = true
+      r[#r + 1] = { id = id, app = app, name = app:name(), bundle = app:bundleID(),
+        space = spaces[1], real = real }
+    end
+    for _, win in ipairs(hs.window.visibleWindows()) do
+      if win:isStandard() then add(win:id(), win:application(), true) end
+    end
+    local active = activeSpaces()
+    for _, w in ipairs(hs.window.list and hs.window.list(true) or {}) do
+      local id, b = w.kCGWindowNumber, w.kCGWindowBounds or {}
+      if id and w.kCGWindowLayer == 0 and (b.Width or 0) >= 300 and (b.Height or 0) >= 300 then
+        local space = spaceOfWindow(id)
+        if space and not active[space] then
+          add(id, hs.application.applicationForPID(w.kCGWindowOwnerPID), false)
         end
-        table.insert(b.groups[k].entries, e)
       end
     end
+    table.sort(r, function(a, b) return a.id < b.id end)
+    return r
+  end
 
-    local assigned, filled = {}, {}
-    for _, b in pairs(byScreen) do
-      table.sort(b.order, function(x, y)
-        local xi, yi = x.saved.index or math.huge, y.saved.index or math.huge
-        if xi ~= yi then return xi < yi end
-        return x.saved.id < y.saved.id
-      end)
-      local desks = userDesktops(b.screen)
-      while #desks < #b.order do
-        missionControlOpen = true
-        if not hs.spaces.addSpaceToScreen(b.screen, false) then break end
-        desks = userDesktops(b.screen)
+  local function sortedKeys(t)
+    local r = {}
+    for k in pairs(t) do r[#r + 1] = k end
+    table.sort(r)
+    return r
+  end
+
+  -- A map's desktops, one display per line group, for the save alert.
+  local function summary(displays)
+    local lines = {}
+    for _, d in ipairs(displays) do
+      local desks = {}
+      for i, apps in ipairs(d.desktops) do
+        desks[#desks + 1] = i .. ": " .. (#apps > 0 and table.concat(apps, ", ") or "(empty)")
       end
-      for i, g in ipairs(b.order) do
-        for _, e in ipairs(g.entries) do assigned[e] = desks[i] end
-      end
-      filled[b.screen:getUUID()] = #b.order
+      lines[#lines + 1] = d.name .. "\n  " .. table.concat(desks, "\n  ")
     end
-    return assigned, filled
+    return table.concat(lines, "\n")
   end
 
-  -- Size and position a window on its saved screen. Moving it onto another
-  -- display lands it on whichever desktop that display is showing.
-  local function place(win, entry)
-    local s = findScreen(entry.screen)
-    if not s then return end
-    local sf, u = s:frame(), entry.unit
-    wm.setFrame(win, { x = sf.x + u.x * sf.w, y = sf.y + u.y * sf.h, w = u.w * sf.w, h = u.h * sf.h })
-  end
-
-  -- Save the visible windows into this display count's snapshot. `fresh`
-  -- discards what was stored first, for starting an arrangement over.
+  -- Write this display count's map from where windows are now. An app on
+  -- several desktops goes to the one holding most of its windows, the
+  -- earliest on a tie. Unless `fresh`, apps in the stored map that have no
+  -- window open keep their stored desktop.
   function wm.saveSnapshot(fresh)
-    local data = load()
-    local k = key()
-    local entries, seen = {}, {}
-    for _, win in ipairs(visibleWindows()) do
-      local e = describe(win)
-      entries[#entries + 1], seen[e.id] = e, true
+    clearLog()
+    local data, k = load(), key()
+    local screens = hs.screen.allScreens()
+    local order = {}
+    for i, s in ipairs(screens) do order[s:getUUID()] = i end
+
+    -- app name -> "screen order:desktop position" -> window count
+    local counts = {}
+    for _, w in ipairs(openWindows()) do
+      local uuid = hs.spaces.spaceDisplay(w.space)
+      local pos = uuid and indexOf(userDesktops(uuid), w.space)
+      log("saw %s window %d on %s%s", w.name, w.id, describeSpace(w.space), w.real and "" or " (not showing)")
+      if pos and order[uuid] then
+        counts[w.name] = counts[w.name] or {}
+        local slot = order[uuid] .. ":" .. pos
+        counts[w.name][slot] = (counts[w.name][slot] or 0) + 1
+      end
     end
-    local saved = #entries
-    if not fresh and data[k] then
-      local live = liveIds()
-      for _, e in ipairs(data[k].windows) do
-        if not seen[e.id] and (not live or live[e.id]) then
-          -- Not showing, so its position is as saved, but its desktop can
-          -- still be read. Only trust it while the window is on the same
-          -- display it was saved on; a desktop that migrated to another
-          -- display when a monitor was unplugged says nothing about where
-          -- the window belongs.
-          local space = spaceOf(e.id)
-          if space and space.screenName == e.screen.name then e.space = space end
-          entries[#entries + 1] = e
+
+    local displays, placed = {}, {}
+    for i, s in ipairs(screens) do
+      displays[i] = { name = s:name(), builtin = isBuiltin(s), desktops = {} }
+    end
+    local function put(d, pos, app)
+      for j = #d.desktops + 1, pos do d.desktops[j] = {} end
+      table.insert(d.desktops[pos], app)
+      placed[app] = true
+    end
+    for _, app in ipairs(sortedKeys(counts)) do
+      local best, bestN
+      for slot, n in pairs(counts[app]) do
+        local si, pos = slot:match("(%d+):(%d+)")
+        si, pos = tonumber(si), tonumber(pos)
+        if not best or n > bestN or (n == bestN and (si < best[1] or (si == best[1] and pos < best[2]))) then
+          best, bestN = { si, pos }, n
+        end
+      end
+      put(displays[best[1]], best[2], app)
+    end
+
+    local kept = 0
+    if not fresh and data[k] and data[k].displays then
+      local used = {}
+      for _, old in ipairs(data[k].displays) do
+        local s = findScreen(old, used)
+        if s then
+          used[s:getUUID()] = true
+          local d = displays[order[s:getUUID()]]
+          for pos, apps in ipairs(old.desktops or {}) do
+            for _, app in ipairs(apps) do
+              if not placed[app] then put(d, pos, app) kept = kept + 1 end
+            end
+          end
         end
       end
     end
-    data[k] = { savedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"), windows = entries }
+    for _, d in ipairs(displays) do
+      for _, apps in ipairs(d.desktops) do table.sort(apps) end
+    end
+
+    data[k] = { savedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"), displays = displays }
     hs.json.write(data, path, true, true)
-    hs.alert.show(string.format("Saved %d windows (%d in the %s-display snapshot)", saved, #entries, k))
+    log("saved %s-display map (%d kept from before):\n%s", k, kept, summary(displays))
+    hs.alert.show("Saved " .. k .. "-display desktops\n" .. summary(displays)
+      .. (kept > 0 and string.format("\n(%d not running, kept from before)", kept) or ""), 6)
   end
 
-  -- Apps (by bundle ID) the desktop drag below leaves alone; their windows
-  -- stay on whatever desktop they are on and are reported. Empty by default:
-  -- browsers keep tabs in the title bar, but grabPoint() skips tabs and other
-  -- controls, and a grab that does not move the window is let go in place.
-  -- init.local.lua can add to it.
+  -- Apps (by bundle ID or name) the desktop drag below leaves alone; their
+  -- windows stay on whatever desktop they are on and are reported. Empty by
+  -- default: browsers keep tabs in the title bar, but grabPoint() skips tabs
+  -- and other controls, and a grab that does not move the window is let go
+  -- in place. init.local.lua can add to it.
   wm.noDrag = {}
 
   -- The keys macOS's "Move left a space" and "Move right a space" shortcuts
@@ -252,16 +268,10 @@ return function(wm)
     end
   end
 
-  -- What the last restore did, step by step, in ~/.hammerspoon/restore.log:
-  -- desktop moves happen out of sight and too fast to watch, and this is how
-  -- to tell a shortcut that did not fire from a window that did not follow.
-  -- Each line is written as it happens, so a restore that stops partway
-  -- still shows how far it got.
-  local logPath = hs.configdir .. "/restore.log"
-  local function log(fmt, ...)
-    local f = io.open(logPath, "a")
-    if f then f:write(os.date("%H:%M:%S "), string.format(fmt, ...), "\n") f:close() end
-  end
+  -- State for the restore in progress: windows that did not reach their
+  -- desktop, for the alert; desktops windows were moved off, candidates for
+  -- removal; and whether adding a desktop left Mission Control open.
+  local moveErrors, vacated, missionControlOpen
 
   -- A restore is a chain of timed steps. `run` counts restores, so a step
   -- left over from one that was stopped does nothing; an error in any step
@@ -278,6 +288,28 @@ return function(wm)
   end
   local function after(delay, fn) hs.timer.doAfter(delay, guarded(fn)) end
 
+  -- Windows seen only in the window server's list (see openWindows()) are
+  -- moved only once they turn out to be ordinary windows: an app's hidden
+  -- helper and minimized windows look the same until their desktop shows.
+  local function skipUnreal(e, win)
+    if not e.real and not (win and win:isStandard() and not win:isMinimized()) then
+      log("  skipped %s window %d: not an ordinary window", e.name, e.id)
+      return true
+    end
+  end
+
+  -- Keep a window's place relative to the screen when it changes display.
+  local function carry(win, target)
+    local to = hs.screen.find(hs.spaces.spaceDisplay(target))
+    local from, f = win:screen(), win:frame()
+    if not (to and from and f) then return end
+    local sf, tf = from:frame(), to:frame()
+    local w, h = math.min(f.w / sf.w, 1), math.min(f.h / sf.h, 1)
+    local x = math.max(0, math.min((f.x - sf.x) / sf.w, 1 - w))
+    local y = math.max(0, math.min((f.y - sf.y) / sf.h, 1 - h))
+    wm.setFrame(win, { x = tf.x + x * tf.w, y = tf.y + y * tf.h, w = w * tf.w, h = h * tf.h })
+  end
+
   -- macOS will not let another app move a window to a different desktop, and
   -- cannot move a desktop between displays at all; only Mission Control's
   -- drag does that. Two moves still work, and restore builds on them:
@@ -287,16 +319,6 @@ return function(wm)
   -- of its own, so show the window's desktop on one and its target on the
   -- other, then move it over. Showing its desktop is also what makes the
   -- window reachable at all.
-  -- Windows the snapshot does not know (see matchWindows()) are only moved
-  -- once they turn out to be ordinary windows: an app's hidden helper and
-  -- minimized windows look the same until their desktop is showing.
-  local function skipExtra(e, win)
-    if e.extra and not (win and win:isStandard() and not win:isMinimized()) then
-      log("  skipped %s window %d: not an ordinary window", e.name, e.id)
-      return true
-    end
-  end
-
   local function moveAcross(group, nextJob)
     local active = activeSpaces()
     for _, space in ipairs({ group.source, group.target }) do
@@ -306,10 +328,10 @@ return function(wm)
     after(0.8, function()
       for _, e in ipairs(group) do
         local win = hs.window.get(e.id)
-        if skipExtra(e, win) then goto continue end
-        if win then place(win, e) end
-        log("across %s (window %d): desktop %s -> %s, now on %s", e.name, e.id,
-          tostring(group.source), tostring(group.target), tostring(spaceOfWindow(e.id)))
+        if skipUnreal(e, win) then goto continue end
+        if win then carry(win, group.target) end
+        log("across %s (window %d): %s -> %s, now on %s", e.name, e.id, describeSpace(group.source),
+          describeSpace(group.target), describeSpace(spaceOfWindow(e.id)))
         if spaceOfWindow(e.id) == group.target then
           vacated[group.source] = true
         else
@@ -387,14 +409,15 @@ return function(wm)
     end
     local source = spaceOfWindow(e.id)
     if not source then return fail("window is on no desktop") end
+    if source == target then return nextJob() end
     if not activeSpaces()[source] then hs.spaces.gotoSpace(source) end
     after(0.8, function()
       local win = hs.window.get(e.id)
-      if skipExtra(e, win) then return nextJob() end
+      if skipUnreal(e, win) then return nextJob() end
       local desks = hs.spaces.spacesForScreen(hs.spaces.spaceDisplay(source)) or {}
       local from, to = indexOf(desks, source), indexOf(desks, target)
-      log("drag %s (window %d): desktop %s -> %s, positions %s -> %s of [%s]", e.name, e.id,
-        tostring(source), tostring(target), tostring(from), tostring(to), table.concat(desks, ","))
+      log("drag %s (window %d): %s -> %s, positions %s -> %s of [%s]", e.name, e.id,
+        describeSpace(source), describeSpace(target), tostring(from), tostring(to), table.concat(desks, ","))
       if not (win and from and to) then
         return fail(not win and "window not reachable" or "desktop not on this display")
       end
@@ -405,7 +428,6 @@ return function(wm)
         local grab, why = grabPoint(win)
         if not grab then return fail(why) end
         local ev, types = hs.eventtap.event, hs.eventtap.event.types
-        local held = grab
         local start = win:frame()
         local pointer = hs.mouse.absolutePosition()
         local key = to > from and keys.right or keys.left
@@ -422,8 +444,7 @@ return function(wm)
         after(0.15, function()
           -- Move far enough for macOS to treat it as a drag, not a click.
           for dx = 2, 10, 2 do
-            held = { x = grab.x + dx, y = grab.y }
-            ev.newMouseEvent(types.leftMouseDragged, held):post()
+            ev.newMouseEvent(types.leftMouseDragged, { x = grab.x + dx, y = grab.y }):post()
           end
           after(0.15, function()
             log("  after grab: %s", where())
@@ -441,16 +462,17 @@ return function(wm)
             local function step()
               if steps == 0 then
                 return after(0.4, function()
-                  ev.newMouseEvent(types.leftMouseUp, held):post()
+                  -- Drag back to where the grab started before letting go,
+                  -- so the window lands where it was, not 10 points over.
+                  ev.newMouseEvent(types.leftMouseDragged, grab):post()
+                  ev.newMouseEvent(types.leftMouseUp, grab):post()
                   hs.mouse.absolutePosition(pointer)
                   after(0.4, function()
                     log("  after release: %s", where())
                     if spaceOfWindow(e.id) ~= target then
-                      return fail("the window did not land on desktop " .. tostring(target))
+                      return fail("the window did not land on " .. describeSpace(target))
                     end
                     vacated[source] = true
-                    local moved = hs.window.get(e.id)
-                    if moved then place(moved, e) end
                     nextJob()
                   end)
                 end)
@@ -470,15 +492,19 @@ return function(wm)
   end
 
   -- Remove empty desktops, which would otherwise pile up with every dock and
-  -- undock: the ones this restore emptied, and any past the number the
-  -- snapshot fills on a display (`filled`, display UUID -> count). Only a
-  -- regular desktop with no window of its own left goes (windows shown on
-  -- every desktop do not count), and never a display's last one. One that is
-  -- showing is switched away from first, since macOS will not remove the
-  -- active desktop.
+  -- undock: any past the number the map lists for a display (`filled`,
+  -- display UUID -> count), and ones this restore emptied on a display the
+  -- map does not cover. Desktops the map lists stay even when empty, so
+  -- the ones after them keep their numbers. Only a regular desktop with no
+  -- window of its own left goes (windows shown on every desktop do not
+  -- count), and never a display's last one. One that is showing is
+  -- switched away from first, since macOS will not remove the active
+  -- desktop.
   local function removeEmptied(filled)
     local candidates = {}
-    for space in pairs(vacated) do candidates[space] = true end
+    for space in pairs(vacated) do
+      if not filled[hs.spaces.spaceDisplay(space)] then candidates[space] = true end
+    end
     for uuid, n in pairs(filled) do
       for i, space in ipairs(userDesktops(uuid)) do
         if i > n then candidates[space] = true end
@@ -502,92 +528,6 @@ return function(wm)
     end
   end
 
-  -- Put windows back where this display count's snapshot has them: first
-  -- onto their desktops (the moves above, one after another), then into
-  -- position. Windows are matched by ID, which holds while the app stays
-  -- open; after an app restart, by title, then by the app's remaining saved
-  -- slots in order. Moving between desktops takes a few seconds, so this
-  -- returns at once and calls `done` when finished. Returns false without a
-  -- snapshot or while a restore is already running. A restore that errors
-  -- or runs past two minutes is stopped, with the mouse button let go.
-  -- Pair saved windows with open ones, on every desktop. A window keeps its
-  -- ID while its app stays open; after an app restart its windows have new
-  -- IDs and take the app's saved slots, by title first, then largest window
-  -- first (an app's small extra windows are panels and popups). Returns
-  -- copies of the saved entries carrying the open window's ID; saved
-  -- windows with no open match are left out. Open windows of a saved app
-  -- beyond its saved ones (a third Cursor window) join the app: they go to
-  -- the saved desktop with most of its windows, sized like the first of
-  -- them there.
-  local function matchWindows(entries)
-    local open, byId = {}, {}
-    for _, w in ipairs(hs.window.list and hs.window.list(true) or {}) do
-      local id, space = w.kCGWindowNumber, nil
-      if w.kCGWindowLayer == 0 and id then space = spaceOfWindow(id) end
-      if space and hs.spaces.spaceType(space) == "user" then
-        local app = hs.application.applicationForPID(w.kCGWindowOwnerPID)
-        local b = w.kCGWindowBounds or {}
-        local o = { id = id, app = app and (app:bundleID() or app:name()),
-          title = w.kCGWindowName or "", area = (b.Width or 0) * (b.Height or 0) }
-        open[#open + 1], byId[id] = o, o
-      end
-    end
-    table.sort(open, function(a, b) return a.area > b.area end)
-    local taken, pairsFound = {}, {}
-    for _, e in ipairs(entries) do
-      if byId[e.id] then pairsFound[e], taken[e.id] = e.id, true end
-    end
-    local function claim(test)
-      for _, e in ipairs(entries) do
-        if not pairsFound[e] then
-          for _, o in ipairs(open) do
-            if not taken[o.id] and o.app == e.app and test(e, o) then
-              pairsFound[e], taken[o.id] = o.id, true
-              log("matched %s: saved window %d is now %d", e.name, e.id, o.id)
-              break
-            end
-          end
-        end
-      end
-    end
-    claim(function(e, o) return o.title ~= "" and o.title == e.title end)
-    claim(function() return true end)
-    local r = {}
-    for _, e in ipairs(entries) do
-      if pairsFound[e] then
-        r[#r + 1] = setmetatable({ id = pairsFound[e] }, { __index = e })
-      else
-        log("not open: %s (saved window %d)", e.name, e.id)
-      end
-    end
-
-    -- Each app's home: the saved desktop holding most of its windows, the
-    -- earliest on a tie, represented by its first window there.
-    local home = {}
-    for _, e in ipairs(entries) do
-      if e.space then
-        local h = home[e.app] or { counts = {}, first = {} }
-        home[e.app] = h
-        local k = e.space.id
-        h.counts[k] = (h.counts[k] or 0) + 1
-        h.first[k] = h.first[k] or e
-        local best = h.best and h.first[h.best]
-        if not best or h.counts[k] > h.counts[h.best]
-          or (h.counts[k] == h.counts[h.best] and (e.space.index or math.huge) < (best.space.index or math.huge)) then
-          h.best = k
-        end
-      end
-    end
-    table.sort(open, function(a, b) return a.id < b.id end)
-    for _, o in ipairs(open) do
-      local h = not taken[o.id] and home[o.app]
-      if h then
-        r[#r + 1] = setmetatable({ id = o.id, extra = true }, { __index = h.first[h.best] })
-      end
-    end
-    return r
-  end
-
   local watchdog, restore
   stop = function(why)
     run = run + 1
@@ -599,96 +539,77 @@ return function(wm)
     hs.alert.show("Restore stopped partway (" .. why:match("^[^\n]*") .. ")\nDetails in ~/.hammerspoon/restore.log", 10)
   end
 
+  -- Move every window of the apps in this display count's map to its
+  -- desktop, adding desktops where a display has too few, then show each
+  -- display's first desktop. Moving between desktops takes a few seconds,
+  -- so this returns at once and calls `done` when finished. Returns false
+  -- without a map or while a restore is already running. A restore that
+  -- errors or runs past two minutes is stopped, with the mouse button let go.
   function wm.restoreSnapshot(done)
-    local snap = load()[key()]
-    if not snap or running then return false end
+    local map = load()[key()]
+    if not (map and map.displays) or running then return false end
     running, run = true, run + 1
     moveErrors, vacated, missionControlOpen = {}, {}, false
-    local f = io.open(logPath, "w")
-    if f then f:close() end
+    clearLog()
     watchdog = hs.timer.doAfter(120, guarded(function() stop("took over two minutes") end))
-    guarded(function() restore(snap, done) end)()
+    guarded(function() restore(map, done) end)()
     return true
   end
 
-  restore = function(saved, done)
-    log("restore %s-display snapshot (%d windows)", key(), #saved.windows)
-    local snap = { windows = matchWindows(saved.windows) }
-    local left = {}
+  restore = function(map, done)
+    log("restore %s-display map", key())
 
-    local jobs, across, keys = {}, {}, nil
-    local assigned, filled = assignDesktops(snap)
-    for _, e in ipairs(snap.windows) do
-      local current, target = spaceOfWindow(e.id), assigned[e]
-      if target and current ~= target and hs.spaces.spaceType(current) == "user" then
-        if hs.spaces.spaceDisplay(current) ~= hs.spaces.spaceDisplay(target) then
-          local k = current .. ">" .. target
-          if not across[k] then
-            across[k] = { source = current, target = target }
-            jobs[#jobs + 1] = function(nextJob) moveAcross(across[k], nextJob) end
+    -- App name or bundle ID -> the Space it belongs on.
+    local home, filled, used = {}, {}, {}
+    for _, d in ipairs(map.displays) do
+      local s = findScreen(d, used)
+      if not s then
+        log("no screen for %s; its apps stay put", d.name)
+      else
+        local uuid = s:getUUID()
+        used[uuid] = true
+        local desks = userDesktops(uuid)
+        while #desks < #d.desktops do
+          missionControlOpen = true
+          if not hs.spaces.addSpaceToScreen(s, false) then break end
+          desks = userDesktops(uuid)
+        end
+        filled[uuid] = math.max(#d.desktops, 1)
+        for i, apps in ipairs(d.desktops) do
+          for _, app in ipairs(apps) do
+            if desks[i] then home[app] = desks[i] end
           end
-          table.insert(across[k], e)
-        elseif wm.noDrag[e.app] then
-          left[#left + 1] = e.name
+        end
+      end
+    end
+
+    local jobs, across, keys, left = {}, {}, nil, {}
+    for _, e in ipairs(openWindows()) do
+      local target = home[e.name] or (e.bundle and home[e.bundle])
+      if not target then goto continue end
+      if e.space == target then
+        log("in place: %s window %d on %s", e.name, e.id, describeSpace(target))
+      elseif hs.spaces.spaceDisplay(e.space) ~= hs.spaces.spaceDisplay(target) then
+        local k = e.space .. ">" .. target
+        if not across[k] then
+          across[k] = { source = e.space, target = target }
+          jobs[#jobs + 1] = function(nextJob) moveAcross(across[k], nextJob) end
+        end
+        table.insert(across[k], e)
+      elseif wm.noDrag[e.name] or (e.bundle and wm.noDrag[e.bundle]) then
+        left[#left + 1] = e.name
+      else
+        keys = keys or spaceSwitchKeys()
+        if keys then
+          jobs[#jobs + 1] = function(nextJob) dragAlong(e, target, keys, nextJob) end
         else
-          keys = keys or spaceSwitchKeys()
-          if keys then
-            jobs[#jobs + 1] = function(nextJob) dragAlong(e, target, keys, nextJob) end
-          else
-            moveErrors[#moveErrors + 1] = e.name .. " (turn on Move left/right a space)"
-          end
+          moveErrors[#moveErrors + 1] = e.name .. " (turn on Move left/right a space)"
         end
       end
+      ::continue::
     end
 
-    -- Position whatever saved window is showing.
-    local live = liveIds() or {}
-    local byId, positioned = {}, {}
-    for _, e in ipairs(snap.windows) do byId[e.id] = e end
-    local function placeShowing()
-      for _, win in ipairs(visibleWindows()) do
-        local e = byId[win:id()]
-        if e then place(win, e) positioned[e.id] = true end
-      end
-    end
-
-    -- Each display can show one desktop at a time, and only windows on a
-    -- showing desktop can be positioned, so visit every desktop that still
-    -- holds an unpositioned saved window. Then show each display's first
-    -- desktop, so the restore ends the same way every time.
-    local function visitDesktops(done)
-      local desks, seen = {}, {}
-      for _, e in ipairs(snap.windows) do
-        local space = not e.extra and not positioned[e.id] and live[e.id] and spaceOfWindow(e.id)
-        if space and not seen[space] and hs.spaces.spaceType(space) == "user" then
-          desks[#desks + 1], seen[space] = space, true
-        end
-      end
-      local i = 0
-      local function visitNext()
-        i = i + 1
-        local space = desks[i]
-        if not space then return done() end
-        hs.spaces.gotoSpace(space)
-        after(0.8, function() placeShowing() visitNext() end)
-      end
-      visitNext()
-    end
-
-    local finishUp
-    local function finish()
-      placeShowing()
-      visitDesktops(function()
-        local active = activeSpaces()
-        for uuid in pairs(filled) do
-          local first = userDesktops(uuid)[1]
-          if first and not active[first] then hs.spaces.gotoSpace(first) end
-        end
-        after(0.5, finishUp)
-      end)
-    end
-
-    finishUp = function()
+    local function finishUp()
       removeEmptied(filled)
       if missionControlOpen then hs.spaces.closeMissionControl() end
       local report = {}
@@ -698,11 +619,21 @@ return function(wm)
       if #left > 0 then
         report[#report + 1] = "Left on their desktop (drag by hand):\n" .. table.concat(left, "\n")
       end
-      hs.alert.show(#report > 0 and table.concat(report, "\n\n") or "Restored windows", #report > 0 and 8 or 2)
-      log("done: %s", #report > 0 and table.concat(report, " / "):gsub("\n", " ") or "all restored")
+      hs.alert.show(#report > 0 and table.concat(report, "\n\n") or "Restored desktops", #report > 0 and 8 or 2)
+      log("done: %s", #report > 0 and table.concat(report, " / "):gsub("\n", " ") or "all in place")
       running = false
       if watchdog then watchdog:stop() end
       if done then done() end
+    end
+
+    -- End the same way every time: each display shows its first desktop.
+    local function finish()
+      local active = activeSpaces()
+      for uuid in pairs(filled) do
+        local first = userDesktops(uuid)[1]
+        if first and not active[first] then hs.spaces.gotoSpace(first) end
+      end
+      after(0.5, finishUp)
     end
 
     if #jobs > 0 then hs.alert.show("Moving windows between desktops, hands off the mouse", 3) end
@@ -721,7 +652,7 @@ return function(wm)
     if running then
       hs.alert.show("Still restoring, hands off the mouse")
     elseif not wm.restoreSnapshot() then
-      hs.alert.show("No " .. key() .. "-display snapshot saved yet")
+      hs.alert.show("No " .. key() .. "-display desktops saved yet (ctrl+alt+cmd+s)")
     end
   end)
 end

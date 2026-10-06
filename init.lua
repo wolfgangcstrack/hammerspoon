@@ -244,9 +244,10 @@ for n = 1, 3 do
   wm.hotkey(cac, tostring(n), function() wm.applyLayout(wm.layouts[n]) end)
 end
 
--- Saved window snapshots: ctrl+alt+cmd+s saves, +shift starts over,
--- ctrl+alt+cmd+r restores. See snapshot.lua. Nothing rearranges windows on
--- its own when a display comes or goes; the hotkeys do it when asked.
+-- Desktop maps: ctrl+alt+cmd+s records which desktop each app is on,
+-- ctrl+alt+cmd+r moves them back. See snapshot.lua. Nothing rearranges
+-- windows on its own when a display comes or goes; the hotkeys do it when
+-- asked.
 require("snapshot")(wm)
 
 ---------------------------------------------------------------------------
