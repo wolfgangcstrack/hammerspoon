@@ -215,11 +215,16 @@ for n = 1, 3 do
   hs.hotkey.bind(cac, tostring(n), function() wm.applyLayout(wm.layouts[n]) end)
 end
 
--- Re-run the matching layout when a display is plugged in or removed, which
--- Slate could only do from the hotkeys above. The watcher also fires for Dock
+-- Saved window snapshots: ctrl+alt+cmd+s saves, +shift starts over,
+-- ctrl+alt+cmd+r restores. See snapshot.lua.
+require("snapshot")(wm)
+
+-- When a display is plugged in or removed, restore the saved snapshot for the
+-- new display count, or re-run the matching layout above if there is none
+-- (Slate could only do that from the hotkeys). The watcher also fires for Dock
 -- and arrangement changes, so act only when the screen count moves, and wait
 -- out the burst of events a monitor produces while it wakes up. Set
--- `wm.autoLayout = false` in init.local.lua to keep layouts hotkey-only.
+-- `wm.autoLayout = false` in init.local.lua to keep all of this hotkey-only.
 wm.autoLayout = true
 local screenCount = #hs.screen.allScreens()
 local settle
@@ -229,7 +234,10 @@ wm.screenWatcher = hs.screen.watcher.new(function()
     local n = #hs.screen.allScreens()
     if n == screenCount then return end
     screenCount = n
-    if wm.autoLayout and wm.layouts[n] then wm.applyLayout(wm.layouts[n]) end
+    if not wm.autoLayout then return end
+    if not wm.restoreForDisplayChange() and wm.layouts[n] then
+      wm.applyLayout(wm.layouts[n])
+    end
   end)
 end):start()
 
