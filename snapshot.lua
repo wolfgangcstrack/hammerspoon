@@ -255,11 +255,36 @@ return function(wm)
       if flags & 0x80000 ~= 0 then mods[#mods + 1] = "alt" end
       if flags & 0x100000 ~= 0 then mods[#mods + 1] = "cmd" end
       if flags & 0x20000 ~= 0 then mods[#mods + 1] = "shift" end
-      return { mods = mods, key = hs.keycodes.map[p[2]] }
+      return { mods = mods, key = hs.keycodes.map[p[2]], fn = flags & 0x800000 ~= 0 }
     end
-    local left = keyFor(79, { mods = { "ctrl" }, key = "left" })
-    local right = keyFor(81, { mods = { "ctrl" }, key = "right" })
+    local left = keyFor(79, { mods = { "ctrl" }, key = "left", fn = true })
+    local right = keyFor(81, { mods = { "ctrl" }, key = "right", fn = true })
     return left and right and { left = left, right = right }
+  end
+
+  -- Press a shortcut with exactly the flags macOS has on file for it. Arrow
+  -- keys carry the fn flag, and a shortcut stored with it does not fire for
+  -- a press without it.
+  local function press(key)
+    for _, down in ipairs({ true, false }) do
+      local event = hs.eventtap.event.newKeyEvent(key.mods, key.key, down)
+      if key.fn then
+        local flags = event:getFlags()
+        flags.fn = true
+        event:setFlags(flags)
+      end
+      event:post()
+    end
+  end
+
+  -- What the last restore did, step by step, in ~/.hammerspoon/restore.log:
+  -- desktop moves happen out of sight and too fast to watch, and this is how
+  -- to tell a shortcut that did not fire from a window that did not follow.
+  local logLines
+  local function log(fmt, ...) logLines[#logLines + 1] = os.date("%H:%M:%S ") .. string.format(fmt, ...) end
+  local function writeLog()
+    local f = io.open(hs.configdir .. "/restore.log", "w")
+    if f then f:write(table.concat(logLines, "\n"), "\n") f:close() end
   end
 
   local function after(delay, fn) hs.timer.doAfter(delay, fn) end
@@ -283,6 +308,8 @@ return function(wm)
       for _, e in ipairs(group) do
         local win = hs.window.get(e.id)
         if win then place(win, e) end
+        log("across %s (window %d): desktop %s -> %s, now on %s", e.name, e.id,
+          tostring(group.source), tostring(group.target), tostring(spaceOfWindow(e.id)))
         if spaceOfWindow(e.id) == group.target then
           vacated[group.source] = true
         else
@@ -291,6 +318,36 @@ return function(wm)
       end
       nextJob()
     end)
+  end
+
+  -- Roles a mouse-down would operate instead of dragging the window.
+  local controlRoles = {
+    AXButton = true, AXCheckBox = true, AXRadioButton = true, AXRadioGroup = true,
+    AXPopUpButton = true, AXMenuButton = true, AXTextField = true, AXTextArea = true,
+    AXSearchField = true, AXComboBox = true, AXSlider = true, AXTabGroup = true,
+    AXLink = true, AXDisclosureTriangle = true, AXIncrementor = true, AXColorWell = true,
+  }
+
+  -- A spot on the window's title bar that a mouse-down will drag by: scan
+  -- along the row of the traffic-light buttons and take the first point
+  -- whose element belongs to this window (so no window in front of it) and
+  -- is not a control (so nothing gets clicked). Returns nil, reason.
+  local function grabPoint(win)
+    local zoom, f = win:zoomButtonRect(), win:frame()
+    if not zoom then return nil, "no zoom button" end
+    local y, sawOther = zoom.y + zoom.h / 2, false
+    for x = zoom.x + zoom.w + 6, f.x + f.w - 20, 16 do
+      local el = hs.axuielement.systemElementAtPosition(x, y)
+      local role = el and el:attributeValue("AXRole")
+      local owner = el and (role == "AXWindow" and el or el:attributeValue("AXWindow"))
+      local ownerWin = owner and owner:asHSWindow()
+      if ownerWin and ownerWin:id() == win:id() then
+        if not controlRoles[role] then return { x = x, y = y }, role end
+      else
+        sawOther = true
+      end
+    end
+    return nil, sawOther and "another window is in front" or "only controls on the title bar"
   end
 
   -- On one display: what a person does by hand. Hold the window by its title
@@ -302,45 +359,88 @@ return function(wm)
     if not activeSpaces()[source] then hs.spaces.gotoSpace(source) end
     after(0.8, function()
       local win = hs.window.get(e.id)
-      local zoom = win and win:zoomButtonRect()
       local desks = hs.spaces.spacesForScreen(hs.spaces.spaceDisplay(source)) or {}
       local from, to = indexOf(desks, source), indexOf(desks, target)
-      if not (zoom and from and to) then
+      log("drag %s (window %d): desktop %s -> %s, positions %s -> %s of [%s]", e.name, e.id,
+        tostring(source), tostring(target), tostring(from), tostring(to), table.concat(desks, ","))
+      if not (win and from and to) then
+        log("  gave up: %s", not win and "window not reachable" or "desktop not on this display")
         moveErrors[#moveErrors + 1] = e.name
         return nextJob()
       end
-      local ev, types = hs.eventtap.event, hs.eventtap.event.types
-      local grab = { x = zoom.x + zoom.w + 6, y = zoom.y + zoom.h / 2 }
-      local held = { x = grab.x + 2, y = grab.y }
-      local pointer = hs.mouse.absolutePosition()
-      local key = to > from and keys.right or keys.left
+      -- Bring it to the front first and give that a moment: a click lands on
+      -- whatever window is frontmost at that spot.
       win:focus()
-      ev.newMouseEvent(types.leftMouseDown, grab):post()
-      after(0.15, function()
-        ev.newMouseEvent(types.leftMouseDragged, held):post()
-        local steps = math.abs(to - from)
-        local function step()
-          if steps == 0 then
-            return after(0.4, function()
+      after(0.3, function()
+        local grab, why = grabPoint(win)
+        if not grab then
+          log("  gave up: %s", why)
+          moveErrors[#moveErrors + 1] = e.name
+          return nextJob()
+        end
+        local ev, types = hs.eventtap.event, hs.eventtap.event.types
+        local held = grab
+        local start = win:frame()
+        local pointer = hs.mouse.absolutePosition()
+        local key = to > from and keys.right or keys.left
+        local display = hs.spaces.spaceDisplay(source)
+        local function where()
+          return string.format("showing %s, window on %s, window at %d,%d",
+            tostring((hs.spaces.activeSpaces() or {})[display]), tostring(spaceOfWindow(e.id)),
+            win:frame().x, win:frame().y)
+        end
+        log("  grabbing %d,%d (%s); key %s+%s%s", grab.x, grab.y, why,
+          table.concat(key.mods, "+"), key.key, key.fn and " (fn)" or "")
+        ev.newMouseEvent(types.leftMouseDown, grab):post()
+        after(0.15, function()
+          -- Move far enough for macOS to treat it as a drag, not a click.
+          for dx = 2, 10, 2 do
+            held = { x = grab.x + dx, y = grab.y }
+            ev.newMouseEvent(types.leftMouseDragged, held):post()
+          end
+          after(0.15, function()
+            log("  after grab: %s", where())
+            -- Only switch desktops once the window is visibly being dragged;
+            -- otherwise let go well away from the spot, so whatever is under it
+            -- does not register a click, and report it.
+            if math.abs(win:frame().x - start.x) < 4 then
+              held = { x = grab.x + 80, y = grab.y + 80 }
+              ev.newMouseEvent(types.leftMouseDragged, held):post()
               ev.newMouseEvent(types.leftMouseUp, held):post()
               hs.mouse.absolutePosition(pointer)
-              after(0.4, function()
-                if spaceOfWindow(e.id) == target then
-                  vacated[source] = true
-                  local moved = hs.window.get(e.id)
-                  if moved then place(moved, e) end
-                else
-                  moveErrors[#moveErrors + 1] = e.name
-                end
-                nextJob()
+              log("  gave up: the window did not move with the grab")
+              moveErrors[#moveErrors + 1] = e.name
+              return nextJob()
+            end
+            local steps = math.abs(to - from)
+            local function step()
+              if steps == 0 then
+                return after(0.4, function()
+                  ev.newMouseEvent(types.leftMouseUp, held):post()
+                  hs.mouse.absolutePosition(pointer)
+                  after(0.4, function()
+                    log("  after release: %s", where())
+                    if spaceOfWindow(e.id) == target then
+                      vacated[source] = true
+                      local moved = hs.window.get(e.id)
+                      if moved then place(moved, e) end
+                    else
+                      moveErrors[#moveErrors + 1] = e.name
+                    end
+                    nextJob()
+                  end)
+                end)
+              end
+              steps = steps - 1
+              press(key)
+              after(0.5, function()
+                log("  after key press: %s", where())
+                step()
               end)
-            end)
-          end
-          steps = steps - 1
-          hs.eventtap.keyStroke(key.mods, key.key, 0)
-          after(0.5, step)
-        end
-        step()
+            end
+            step()
+          end)
+        end)
       end)
     end)
   end
@@ -381,7 +481,8 @@ return function(wm)
     local snap = load()[key()]
     if not snap or running then return false end
     running = true
-    moveErrors, vacated, missionControlOpen = {}, {}, false
+    moveErrors, vacated, missionControlOpen, logLines = {}, {}, false, {}
+    log("restore %s-display snapshot (%d windows)", key(), #snap.windows)
     local left = {}
 
     local jobs, across, keys = {}, {}, nil
@@ -491,6 +592,8 @@ return function(wm)
         report[#report + 1] = "Left on their desktop (drag by hand):\n" .. table.concat(left, "\n")
       end
       hs.alert.show(#report > 0 and table.concat(report, "\n\n") or "Restored windows", #report > 0 and 8 or 2)
+      log("done: %s", #report > 0 and table.concat(report, " / "):gsub("\n", " ") or "all restored")
+      writeLog()
       running = false
       if done then done() end
     end
