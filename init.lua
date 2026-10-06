@@ -62,11 +62,21 @@ function wm.screen(index)
   return hs.screen.allScreens()[index + 1]
 end
 
+-- Set a frame that may be on another screen. macOS fits the new size to the
+-- screen the window is still on before moving it, so a window headed for a
+-- bigger display arrives too small; once it is there, the second set sticks.
+function wm.setFrame(win, f)
+  win:setFrame(f)
+  local got = win:frame()
+  if got.w < f.w - 1 or got.h < f.h - 1 then win:setFrame(f) end
+end
+
 -- `target` is a 0-based screen index or a direction: "East", "West", "North"
 -- or "South". Directions are strict, as in Slate: with displays side by side
--- there is nothing to the north, so the throw does nothing rather than
--- picking the nearest screen sideways. `resize` fills the destination screen;
--- without it the window keeps its size.
+-- there is nothing to the north. `resize` fills the destination screen, or,
+-- when there is no screen that way, the window's own screen, so pressing the
+-- key again on the top display maximizes there. Without `resize` the window
+-- keeps its size and a throw with nowhere to go does nothing.
 function wm.throw(target, resize)
   return function(win)
     local dest
@@ -75,10 +85,10 @@ function wm.throw(target, resize)
     else
       dest = win:screen()["to" .. target](win:screen(), nil, true)
     end
-    if not dest then return end
     if resize then
-      win:setFrame(dest:frame())
-    else
+      dest = dest or win:screen()
+      wm.setFrame(win, dest:frame())
+    elseif dest then
       win:moveToScreen(dest, true, true)
     end
   end

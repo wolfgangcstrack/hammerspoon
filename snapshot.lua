@@ -116,7 +116,7 @@ return function(wm)
     local s = findScreen(entry.screen)
     if not s then return end
     local sf, u = s:frame(), entry.unit
-    win:setFrame({ x = sf.x + u.x * sf.w, y = sf.y + u.y * sf.h, w = u.w * sf.w, h = u.h * sf.h })
+    wm.setFrame(win, { x = sf.x + u.x * sf.w, y = sf.y + u.y * sf.h, w = u.w * sf.w, h = u.h * sf.h })
     local space = targetSpace(s, entry.space)
     if space and (hs.spaces.windowSpaces(win) or {})[1] ~= space then
       local ok, err = hs.spaces.moveWindowToSpace(win, space)
