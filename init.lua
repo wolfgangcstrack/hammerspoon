@@ -84,9 +84,28 @@ function wm.throw(target, resize)
   end
 end
 
+-- Bind a hotkey, remembering any combination macOS refuses. Hammerspoon
+-- returns nil without a word when the system already owns a combination (a
+-- Mission Control or Keyboard Shortcuts entry), so these get reported once
+-- the config has loaded instead of the key just doing nothing.
+wm.failedHotkeys = {}
+function wm.hotkey(mods, key, fn)
+  local hk = hs.hotkey.bind(mods, key, fn)
+  if not hk then
+    -- Say who owns it: a macOS shortcut (even a disabled one can block the
+    -- combination) or, failing that, another running app.
+    local sys = hs.hotkey.systemAssigned(mods, key)
+    local owner = not sys and "another app"
+      or ("macOS shortcut, " .. (sys.enabled and "enabled" or "disabled"))
+    wm.failedHotkeys[#wm.failedHotkeys + 1] =
+      table.concat(mods, "+") .. "+" .. key .. " (" .. owner .. ")"
+  end
+  return hk
+end
+
 -- Bind a window operation to the focused window.
 function wm.bind(mods, key, op)
-  return hs.hotkey.bind(mods, key, function()
+  return wm.hotkey(mods, key, function()
     local win = hs.window.focusedWindow()
     if win then op(win) end
   end)
@@ -157,7 +176,7 @@ wm.bind(ca, "e", wm.grow(0.05))
 wm.bind(ca, "s", wm.grow(-0.05))
 
 -- Window hints: a letter over every window, press it to focus that window
-hs.hotkey.bind({ "cmd" }, "escape", function() hs.hints.windowHints() end)
+wm.hotkey({ "cmd" }, "escape", function() hs.hints.windowHints() end)
 
 ---------------------------------------------------------------------------
 -- Layouts, one per display count
@@ -212,7 +231,7 @@ wm.layouts = {
 }
 
 for n = 1, 3 do
-  hs.hotkey.bind(cac, tostring(n), function() wm.applyLayout(wm.layouts[n]) end)
+  wm.hotkey(cac, tostring(n), function() wm.applyLayout(wm.layouts[n]) end)
 end
 
 -- Saved window snapshots: ctrl+alt+cmd+s saves, +shift starts over,
@@ -260,4 +279,8 @@ wm.configWatcher = hs.pathwatcher.new(repoDir, function(paths)
   end
 end):start()
 
-hs.alert.show("Hammerspoon config loaded")
+if #wm.failedHotkeys > 0 then
+  hs.alert.show("Hammerspoon could not bind:\n" .. table.concat(wm.failedHotkeys, "\n"), 15)
+else
+  hs.alert.show("Hammerspoon config loaded")
+end

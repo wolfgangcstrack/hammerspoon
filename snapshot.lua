@@ -168,9 +168,9 @@ return function(wm)
   end):start()
 
   local cac = { "ctrl", "alt", "cmd" }
-  hs.hotkey.bind(cac, "s", function() wm.saveSnapshot(false) end)
-  hs.hotkey.bind({ "ctrl", "alt", "cmd", "shift" }, "s", function() wm.saveSnapshot(true) end)
-  hs.hotkey.bind(cac, "r", function()
+  wm.hotkey(cac, "s", function() wm.saveSnapshot(false) end)
+  wm.hotkey({ "ctrl", "alt", "cmd", "shift" }, "s", function() wm.saveSnapshot(true) end)
+  wm.hotkey(cac, "r", function()
     if wm.restoreForDisplayChange() then
       hs.alert.show("Restored windows")
     else
