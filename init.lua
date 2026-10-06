@@ -142,7 +142,7 @@ wm.bind(ca, "3", wm.throw(2, true))
 wm.bind(cac, "right", wm.throw("East", true))
 wm.bind(cac, "left", wm.throw("West", true))
 wm.bind(cac, "up", wm.throw("North", true))
-wm.bind(cac, "down", wm.throw(1, true))
+wm.bind(cac, "down", wm.throw("South", true))
 
 -- Quarter-screen corners, numbered like Cartesian quadrants
 wm.bind({ "ctrl" }, "1", wm.unit(0.5, 0, 0.5, 0.5))   -- top right
