@@ -532,12 +532,18 @@ return function(wm)
   -- undock: any past the number the map lists for a display (`filled`,
   -- display UUID -> count), and ones this restore emptied on a display the
   -- map does not cover. Desktops the map lists stay even when empty, so
-  -- the ones after them keep their numbers. Only a regular desktop with no
-  -- window of its own left goes (windows shown on every desktop do not
-  -- count), and never a display's last one. One that is showing is
-  -- switched away from first, since macOS will not remove the active
-  -- desktop.
-  local function removeEmptied(filled)
+  -- the ones after them keep their numbers. Only a regular desktop with
+  -- none of the windows the scan found (`found`) left on it goes, and never
+  -- a display's last one: apps park hidden helper windows on desktops, so
+  -- the window server's own list would keep every desktop. One that is
+  -- showing is switched away from first, since macOS will not remove the
+  -- active desktop.
+  local function removeEmptied(filled, found)
+    local occupied = {}
+    for _, e in ipairs(found) do
+      local space = spaceOfWindow(e.id)
+      if space then occupied[space] = true end
+    end
     local candidates = {}
     for space in pairs(vacated) do
       if not filled[hs.spaces.spaceDisplay(space)] then candidates[space] = true end
@@ -549,10 +555,7 @@ return function(wm)
     end
     local active = activeSpaces()
     for space in pairs(candidates) do
-      local empty = hs.spaces.spaceType(space) == "user"
-      for _, id in ipairs(hs.spaces.windowsForSpace(space) or {}) do
-        if #(hs.spaces.windowSpaces(id) or {}) == 1 then empty = false end
-      end
+      local empty = hs.spaces.spaceType(space) == "user" and not occupied[space]
       local uuid = hs.spaces.spaceDisplay(space)
       local siblings = uuid and hs.spaces.spacesForScreen(uuid) or {}
       if empty and #siblings > 1 then
@@ -644,7 +647,7 @@ return function(wm)
     end
 
     local function finishUp()
-      removeEmptied(filled)
+      removeEmptied(filled, found)
       if missionControlOpen then hs.spaces.closeMissionControl() end
       local report = {}
       if #moveErrors > 0 then
