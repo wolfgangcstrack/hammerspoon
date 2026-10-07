@@ -93,43 +93,91 @@ return function(wm)
     return string.format("%s desktop %s", screen and screen:name() or "?", tostring(i or space))
   end
 
-  -- Every open window of an ordinary app that sits on exactly one regular
-  -- desktop, on any display, showing or not: { id, app, name, bundle, space,
-  -- real }. Windows on a showing desktop come from Accessibility, which
-  -- knows a real window from an app's hidden helpers and minimized ones.
-  -- Windows on the other desktops can only be seen in the window server's
-  -- list, which has those helpers too; small ones are dropped here, and
-  -- `real` is false so a restore checks each once its desktop is showing.
-  local function openWindows()
-    local r, seen = {}, {}
-    local function add(id, app, real)
-      if seen[id] or not app or app:bundleID() == "org.hammerspoon.Hammerspoon" then return end
-      local spaces = hs.spaces.windowSpaces(id) or {}
-      if #spaces ~= 1 or hs.spaces.spaceType(spaces[1]) ~= "user" then
-        if real and #spaces == 0 then log("no desktop for %s window %d; left alone", app:name(), id) end
-        return
-      end
-      seen[id] = true
-      r[#r + 1] = { id = id, app = app, name = app:name(), bundle = app:bundleID(),
-        space = spaces[1], real = real }
+  -- A save or restore is a chain of timed steps. `run` counts restores, so a step
+  -- left over from one that was stopped does nothing; an error in any step
+  -- stops it with an alert instead of leaving it hung, since a Lua
+  -- error inside a timer only reaches the Hammerspoon console.
+  local running, run, stop = false, 0, nil
+  local function guarded(fn)
+    local mine = run
+    return function(...)
+      if mine ~= run or not running then return end
+      local ok, err = xpcall(fn, debug.traceback, ...)
+      if not ok then stop("error: " .. tostring(err)) end
     end
-    for _, win in ipairs(hs.window.visibleWindows()) do
-      if win:isStandard() then add(win:id(), win:application(), true) end
-    end
-    local active = activeSpaces()
-    for _, w in ipairs(hs.window.list and hs.window.list(true) or {}) do
-      local id, b = w.kCGWindowNumber, w.kCGWindowBounds or {}
-      if id and w.kCGWindowLayer == 0 and (b.Width or 0) >= 300 and (b.Height or 0) >= 300 then
-        local space = spaceOfWindow(id)
-        if space and not active[space] then
-          add(id, hs.application.applicationForPID(w.kCGWindowOwnerPID), false)
+  end
+  local function after(delay, fn) hs.timer.doAfter(delay, guarded(fn)) end
+
+  -- Every open window of an ordinary app on exactly one regular desktop,
+  -- on every display: { id, name, bundle, space }, passed to `done`.
+  -- Neither Accessibility nor the window server's list in Hammerspoon sees
+  -- windows on a desktop that is not showing, so step every display through
+  -- its desktops (each display's 1st together, then each 2nd, ...) and read
+  -- the windows showing at each step. Accessibility tells real windows from
+  -- an app's hidden helpers, and leaves out minimized ones. The displays
+  -- are left showing their last desktop; `shown` is what showed before.
+  local function scanWindows(done)
+    local found, seen, visited = {}, {}, {}
+    local shown = hs.spaces.activeSpaces() or {}
+    local function collect()
+      for space in pairs(activeSpaces()) do visited[space] = true end
+      for _, win in ipairs(hs.window.visibleWindows()) do
+        local app, id = win:application(), win:id()
+        if win:isStandard() and app and not seen[id] and app:bundleID() ~= "org.hammerspoon.Hammerspoon" then
+          local spaces = hs.spaces.windowSpaces(id) or {}
+          if #spaces == 1 and hs.spaces.spaceType(spaces[1]) == "user" then
+            seen[id] = true
+            found[#found + 1] = { id = id, name = app:name(), bundle = app:bundleID(), space = spaces[1] }
+          elseif #spaces == 0 then
+            log("no desktop for %s window %d; left alone", app:name(), id)
+          end
         end
       end
     end
-    table.sort(r, function(a, b) return a.id < b.id end)
-    return r
+    local desks, most = {}, 0
+    for _, s in ipairs(hs.screen.allScreens()) do
+      desks[#desks + 1] = userDesktops(s)
+      most = math.max(most, #desks[#desks])
+    end
+    collect()
+    local k = 0
+    local function step()
+      k = k + 1
+      if k > most then
+        table.sort(found, function(a, b) return a.id < b.id end)
+        return done(found, shown)
+      end
+      local moved = false
+      for _, list in ipairs(desks) do
+        if list[k] and not visited[list[k]] then hs.spaces.gotoSpace(list[k]) moved = true end
+      end
+      if not moved then return step() end
+      -- Let the desktops finish sliding in before reading their windows.
+      after(0.8, function() collect() step() end)
+    end
+    step()
   end
 
+  -- Show these desktops (display UUID -> Space ID) where they are not.
+  local function showSpaces(spaces)
+    local active = activeSpaces()
+    for _, space in pairs(spaces) do
+      if not active[space] then hs.spaces.gotoSpace(space) end
+    end
+  end
+
+  local watchdog
+  local function startRun()
+    running, run = true, run + 1
+    clearLog()
+    watchdog = hs.timer.doAfter(120, guarded(function() stop("took over two minutes") end))
+  end
+  local function endRun()
+    running = false
+    if watchdog then watchdog:stop() end
+  end
+
+  local save
   local function sortedKeys(t)
     local r = {}
     for k in pairs(t) do r[#r + 1] = k end
@@ -153,9 +201,18 @@ return function(wm)
   -- Write this display count's map from where windows are now. An app on
   -- several desktops goes to the one holding most of its windows, the
   -- earliest on a tie. Unless `fresh`, apps in the stored map that have no
-  -- window open keep their stored desktop.
+  -- window open keep their stored desktop. Reading every desktop takes a
+  -- moment of desktops switching; each display ends on the desktop it was
+  -- showing. Returns false while a save or restore is running.
   function wm.saveSnapshot(fresh)
-    clearLog()
+    if running then return false end
+    startRun()
+    log("save %s-display map", key())
+    scanWindows(guarded(function(found, shown) save(fresh, found) showSpaces(shown) endRun() end))
+    return true
+  end
+
+  save = function(fresh, found)
     local data, k = load(), key()
     local screens = hs.screen.allScreens()
     local order = {}
@@ -163,10 +220,10 @@ return function(wm)
 
     -- app name -> "screen order:desktop position" -> window count
     local counts = {}
-    for _, w in ipairs(openWindows()) do
+    for _, w in ipairs(found) do
       local uuid = hs.spaces.spaceDisplay(w.space)
       local pos = uuid and indexOf(userDesktops(uuid), w.space)
-      log("saw %s window %d on %s%s", w.name, w.id, describeSpace(w.space), w.real and "" or " (not showing)")
+      log("saw %s window %d on %s", w.name, w.id, describeSpace(w.space))
       if pos and order[uuid] then
         counts[w.name] = counts[w.name] or {}
         local slot = order[uuid] .. ":" .. pos
@@ -273,31 +330,6 @@ return function(wm)
   -- removal; and whether adding a desktop left Mission Control open.
   local moveErrors, vacated, missionControlOpen
 
-  -- A restore is a chain of timed steps. `run` counts restores, so a step
-  -- left over from one that was stopped does nothing; an error in any step
-  -- stops the restore with an alert instead of leaving it hung, since a Lua
-  -- error inside a timer only reaches the Hammerspoon console.
-  local running, run, stop = false, 0, nil
-  local function guarded(fn)
-    local mine = run
-    return function()
-      if mine ~= run or not running then return end
-      local ok, err = xpcall(fn, debug.traceback)
-      if not ok then stop("error: " .. tostring(err)) end
-    end
-  end
-  local function after(delay, fn) hs.timer.doAfter(delay, guarded(fn)) end
-
-  -- Windows seen only in the window server's list (see openWindows()) are
-  -- moved only once they turn out to be ordinary windows: an app's hidden
-  -- helper and minimized windows look the same until their desktop shows.
-  local function skipUnreal(e, win)
-    if not e.real and not (win and win:isStandard() and not win:isMinimized()) then
-      log("  skipped %s window %d: not an ordinary window", e.name, e.id)
-      return true
-    end
-  end
-
   -- Keep a window's place relative to the screen when it changes display.
   local function carry(win, target)
     local to = hs.screen.find(hs.spaces.spaceDisplay(target))
@@ -328,7 +360,6 @@ return function(wm)
     after(0.8, function()
       for _, e in ipairs(group) do
         local win = hs.window.get(e.id)
-        if skipUnreal(e, win) then goto continue end
         if win then carry(win, group.target) end
         log("across %s (window %d): %s -> %s, now on %s", e.name, e.id, describeSpace(group.source),
           describeSpace(group.target), describeSpace(spaceOfWindow(e.id)))
@@ -337,7 +368,6 @@ return function(wm)
         else
           moveErrors[#moveErrors + 1] = e.name
         end
-        ::continue::
       end
       nextJob()
     end)
@@ -413,7 +443,6 @@ return function(wm)
     if not activeSpaces()[source] then hs.spaces.gotoSpace(source) end
     after(0.8, function()
       local win = hs.window.get(e.id)
-      if skipUnreal(e, win) then return nextJob() end
       local desks = hs.spaces.spacesForScreen(hs.spaces.spaceDisplay(source)) or {}
       local from, to = indexOf(desks, source), indexOf(desks, target)
       log("drag %s (window %d): %s -> %s, positions %s -> %s of [%s]", e.name, e.id,
@@ -528,15 +557,14 @@ return function(wm)
     end
   end
 
-  local watchdog, restore
+  local restore
   stop = function(why)
     run = run + 1
-    running = false
-    if watchdog then watchdog:stop() end
+    endRun()
     hs.eventtap.event.newMouseEvent(hs.eventtap.event.types.leftMouseUp, hs.mouse.absolutePosition()):post()
     if missionControlOpen then hs.spaces.closeMissionControl() end
     log("stopped: %s", why)
-    hs.alert.show("Restore stopped partway (" .. why:match("^[^\n]*") .. ")\nDetails in ~/.hammerspoon/restore.log", 10)
+    hs.alert.show("Stopped partway (" .. why:match("^[^\n]*") .. ")\nDetails in ~/.hammerspoon/restore.log", 10)
   end
 
   -- Move every window of the apps in this display count's map to its
@@ -548,16 +576,14 @@ return function(wm)
   function wm.restoreSnapshot(done)
     local map = load()[key()]
     if not (map and map.displays) or running then return false end
-    running, run = true, run + 1
+    startRun()
     moveErrors, vacated, missionControlOpen = {}, {}, false
-    clearLog()
-    watchdog = hs.timer.doAfter(120, guarded(function() stop("took over two minutes") end))
-    guarded(function() restore(map, done) end)()
+    log("restore %s-display map", key())
+    scanWindows(guarded(function(found) restore(map, found, done) end))
     return true
   end
 
-  restore = function(map, done)
-    log("restore %s-display map", key())
+  restore = function(map, found, done)
 
     -- App name or bundle ID -> the Space it belongs on.
     local home, filled, used = {}, {}, {}
@@ -584,7 +610,7 @@ return function(wm)
     end
 
     local jobs, across, keys, left = {}, {}, nil, {}
-    for _, e in ipairs(openWindows()) do
+    for _, e in ipairs(found) do
       local target = home[e.name] or (e.bundle and home[e.bundle])
       if not target then goto continue end
       if e.space == target then
@@ -621,18 +647,15 @@ return function(wm)
       end
       hs.alert.show(#report > 0 and table.concat(report, "\n\n") or "Restored desktops", #report > 0 and 8 or 2)
       log("done: %s", #report > 0 and table.concat(report, " / "):gsub("\n", " ") or "all in place")
-      running = false
-      if watchdog then watchdog:stop() end
+      endRun()
       if done then done() end
     end
 
     -- End the same way every time: each display shows its first desktop.
     local function finish()
-      local active = activeSpaces()
-      for uuid in pairs(filled) do
-        local first = userDesktops(uuid)[1]
-        if first and not active[first] then hs.spaces.gotoSpace(first) end
-      end
+      local firsts = {}
+      for uuid in pairs(filled) do firsts[uuid] = userDesktops(uuid)[1] end
+      showSpaces(firsts)
       after(0.5, finishUp)
     end
 
@@ -646,11 +669,16 @@ return function(wm)
   end
 
   local cac = { "ctrl", "alt", "cmd" }
-  wm.hotkey(cac, "s", function() wm.saveSnapshot(false) end)
-  wm.hotkey({ "ctrl", "alt", "cmd", "shift" }, "s", function() wm.saveSnapshot(true) end)
+  local function saveKey(fresh)
+    return function()
+      if not wm.saveSnapshot(fresh) then hs.alert.show("Still busy, hands off the mouse") end
+    end
+  end
+  wm.hotkey(cac, "s", saveKey(false))
+  wm.hotkey({ "ctrl", "alt", "cmd", "shift" }, "s", saveKey(true))
   wm.hotkey(cac, "r", function()
     if running then
-      hs.alert.show("Still restoring, hands off the mouse")
+      hs.alert.show("Still busy, hands off the mouse")
     elseif not wm.restoreSnapshot() then
       hs.alert.show("No " .. key() .. "-display desktops saved yet (ctrl+alt+cmd+s)")
     end
