@@ -111,9 +111,8 @@ return function(wm)
   -- Every open window of an ordinary app on exactly one regular desktop,
   -- on every display: { id, name, bundle, space }, passed to `done`.
   -- Neither Accessibility nor the window server's list in Hammerspoon sees
-  -- windows on a desktop that is not showing, so step every display through
-  -- its desktops (each display's 1st together, then each 2nd, ...) and read
-  -- the windows showing at each step. Accessibility tells real windows from
+  -- windows on a desktop that is not showing, so show each desktop in turn
+  -- and read the windows showing at each step. Accessibility tells real windows from
   -- an app's hidden helpers, and leaves out minimized ones. The displays
   -- are left showing their last desktop; `shown` is what showed before.
   local function scanWindows(done)
@@ -134,36 +133,43 @@ return function(wm)
         end
       end
     end
-    local desks, most = {}, 0
+    local desks = {}
     for _, s in ipairs(hs.screen.allScreens()) do
-      desks[#desks + 1] = userDesktops(s)
-      most = math.max(most, #desks[#desks])
+      for _, space in ipairs(userDesktops(s)) do desks[#desks + 1] = space end
     end
     collect()
-    local k = 0
+    local i = 0
     local function step()
-      k = k + 1
-      if k > most then
+      i = i + 1
+      local space = desks[i]
+      if not space then
         table.sort(found, function(a, b) return a.id < b.id end)
         return done(found, shown)
       end
-      local moved = false
-      for _, list in ipairs(desks) do
-        if list[k] and not visited[list[k]] then hs.spaces.gotoSpace(list[k]) moved = true end
-      end
-      if not moved then return step() end
-      -- Let the desktops finish sliding in before reading their windows.
+      if visited[space] then return step() end
+      hs.spaces.gotoSpace(space)
+      -- Let the desktop finish sliding in before reading its windows.
       after(0.8, function() collect() step() end)
     end
     step()
   end
 
-  -- Show these desktops (display UUID -> Space ID) where they are not.
-  local function showSpaces(spaces)
-    local active = activeSpaces()
-    for _, space in pairs(spaces) do
-      if not active[space] then hs.spaces.gotoSpace(space) end
+  -- Show these desktops (a list, or display UUID -> Space ID) where they
+  -- are not, then call `done`. One at a time: macOS drops a desktop switch
+  -- that arrives while another display's switch is still sliding in.
+  local function showSpaces(spaces, done)
+    local list = {}
+    for _, space in pairs(spaces) do list[#list + 1] = space end
+    local i = 0
+    local function nextSpace()
+      i = i + 1
+      local space = list[i]
+      if not space then return done() end
+      if activeSpaces()[space] then return nextSpace() end
+      hs.spaces.gotoSpace(space)
+      after(0.8, nextSpace)
     end
+    nextSpace()
   end
 
   local watchdog
@@ -208,7 +214,10 @@ return function(wm)
     if running then return false end
     startRun()
     log("save %s-display map", key())
-    scanWindows(guarded(function(found, shown) save(fresh, found) showSpaces(shown) endRun() end))
+    scanWindows(guarded(function(found, shown)
+      save(fresh, found)
+      showSpaces(shown, endRun)
+    end))
     return true
   end
 
@@ -352,12 +361,7 @@ return function(wm)
   -- other, then move it over. Showing its desktop is also what makes the
   -- window reachable at all.
   local function moveAcross(group, nextJob)
-    local active = activeSpaces()
-    for _, space in ipairs({ group.source, group.target }) do
-      if not active[space] then hs.spaces.gotoSpace(space) end
-    end
-    -- Let the desktops finish sliding in before reaching for their windows.
-    after(0.8, function()
+    showSpaces({ group.source, group.target }, function()
       for _, e in ipairs(group) do
         local win = hs.window.get(e.id)
         if win then carry(win, group.target) end
@@ -655,8 +659,7 @@ return function(wm)
     local function finish()
       local firsts = {}
       for uuid in pairs(filled) do firsts[uuid] = userDesktops(uuid)[1] end
-      showSpaces(firsts)
-      after(0.5, finishUp)
+      showSpaces(firsts, finishUp)
     end
 
     if #jobs > 0 then hs.alert.show("Moving windows between desktops, hands off the mouse", 3) end
