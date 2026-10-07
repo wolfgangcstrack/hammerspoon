@@ -3,21 +3,25 @@
 --
 -- One map per display count, so "laptop alone" and "laptop + monitor" are
 -- separate arrangements. A map lists each display's desktops in order and
--- the apps on each, by app name or bundle ID:
+-- the apps on each, by app name or bundle ID, plus the size and place of
+-- each app's windows as fractions of the screen ([x, y, w, h]):
 --
 --   "2": { "displays": [
 --     { "name": "Built-in Retina Display", "builtin": true,
---       "desktops": [ ["Granola", "Notion", "Slack"], ["Postico 2"] ] },
+--       "desktops": [ ["Granola", "Notion", "Slack"], ["Postico 2"] ],
+--       "sizes": { "Slack": [[0, 0, 0.5, 1]], ... } },
 --     { "name": "MSI MPG341CQR", "builtin": false,
---       "desktops": [ ["Google Chrome"], ["Claude", "Cursor"] ] } ] }
+--       "desktops": [ ["Google Chrome"], ["Claude", "Cursor"] ],
+--       "sizes": { "Cursor": [[0.5, 0, 0.5, 1], [0.5, 0, 0.5, 1]], ... } } ] }
 --
 -- Restore moves every window of a listed app to its desktop by position, so
 -- the outcome depends only on the map: no window IDs or titles, and desktop 2
 -- stays desktop 2 even when nothing on desktop 1 is open. Displays are
 -- matched by name, then by role (built-in, or the largest external), so a
 -- map saved at one desk restores onto a different monitor at another.
--- Window sizes are left alone, except that a window carried to another
--- display keeps its place relative to the screen.
+-- An app's windows take its saved sizes in window order (oldest window
+-- first), and windows beyond the saved ones take the last; an app with no
+-- saved sizes keeps whatever size its windows have.
 --
 -- ctrl+alt+cmd+s writes the map from where windows are now (apps not running
 -- keep their saved desktop; +shift forgets them), and ctrl+alt+cmd+r
@@ -115,6 +119,16 @@ return function(wm)
   -- and read the windows showing at each step. Accessibility tells real windows from
   -- an app's hidden helpers, and leaves out minimized ones. The displays
   -- are left showing their last desktop; `shown` is what showed before.
+  -- A window's frame as fractions of its screen, [x, y, w, h], rounded so
+  -- the map stays readable.
+  local function unitOf(win)
+    local f, s = win:frame(), win:screen()
+    if not (f and s) then return nil end
+    local sf = s:frame()
+    local function r(v) return math.floor(v * 10000 + 0.5) / 10000 end
+    return { r((f.x - sf.x) / sf.w), r((f.y - sf.y) / sf.h), r(f.w / sf.w), r(f.h / sf.h) }
+  end
+
   local function scanWindows(done)
     local found, seen, visited = {}, {}, {}
     local shown = hs.spaces.activeSpaces() or {}
@@ -126,7 +140,8 @@ return function(wm)
           local spaces = hs.spaces.windowSpaces(id) or {}
           if #spaces == 1 and hs.spaces.spaceType(spaces[1]) == "user" then
             seen[id] = true
-            found[#found + 1] = { id = id, name = app:name(), bundle = app:bundleID(), space = spaces[1] }
+            found[#found + 1] = { id = id, name = app:name(), bundle = app:bundleID(),
+              space = spaces[1], unit = unitOf(win) }
           elseif #spaces == 0 then
             log("no desktop for %s window %d; left alone", app:name(), id)
           end
@@ -231,7 +246,7 @@ return function(wm)
     local order = {}
     for i, s in ipairs(screens) do order[s:getUUID()] = i end
 
-    -- app name -> "screen order:desktop position" -> window count
+    -- app name -> "screen order:desktop position" -> its windows there
     local counts = {}
     for _, w in ipairs(found) do
       local uuid = hs.spaces.spaceDisplay(w.space)
@@ -240,13 +255,14 @@ return function(wm)
       if pos and order[uuid] then
         counts[w.name] = counts[w.name] or {}
         local slot = order[uuid] .. ":" .. pos
-        counts[w.name][slot] = (counts[w.name][slot] or 0) + 1
+        counts[w.name][slot] = counts[w.name][slot] or {}
+        table.insert(counts[w.name][slot], w)
       end
     end
 
     local displays, placed = {}, {}
     for i, s in ipairs(screens) do
-      displays[i] = { name = s:name(), builtin = isBuiltin(s), desktops = {} }
+      displays[i] = { name = s:name(), builtin = isBuiltin(s), desktops = {}, sizes = {} }
     end
     local function put(d, pos, app)
       for j = #d.desktops + 1, pos do d.desktops[j] = {} end
@@ -255,14 +271,22 @@ return function(wm)
     end
     for _, app in ipairs(sortedKeys(counts)) do
       local best, bestN
-      for slot, n in pairs(counts[app]) do
+      local bestWins
+      for slot, wins in pairs(counts[app]) do
         local si, pos = slot:match("(%d+):(%d+)")
         si, pos = tonumber(si), tonumber(pos)
+        local n = #wins
         if not best or n > bestN or (n == bestN and (si < best[1] or (si == best[1] and pos < best[2]))) then
-          best, bestN = { si, pos }, n
+          best, bestN, bestWins = { si, pos }, n, wins
         end
       end
       put(displays[best[1]], best[2], app)
+      -- Sizes from the windows on that desktop, oldest window first.
+      local sizes = {}
+      for _, w in ipairs(bestWins) do
+        if w.unit then sizes[#sizes + 1] = w.unit end
+      end
+      displays[best[1]].sizes[app] = sizes
     end
 
     local kept = 0
@@ -275,7 +299,11 @@ return function(wm)
           local d = displays[order[s:getUUID()]]
           for pos, apps in ipairs(old.desktops or {}) do
             for _, app in ipairs(apps) do
-              if not placed[app] then put(d, pos, app) kept = kept + 1 end
+              if not placed[app] then
+                put(d, pos, app)
+                d.sizes[app] = old.sizes and old.sizes[app]
+                kept = kept + 1
+              end
             end
           end
         end
@@ -596,8 +624,9 @@ return function(wm)
 
   restore = function(map, found, done)
 
-    -- App name or bundle ID -> the Space it belongs on.
-    local home, filled, used = {}, {}, {}
+    -- App name or bundle ID -> the Space it belongs on, and its saved sizes
+    -- with the display they are fractions of.
+    local home, sizes, filled, used = {}, {}, {}, {}
     for _, d in ipairs(map.displays) do
       local s = findScreen(d, used)
       if not s then
@@ -614,16 +643,29 @@ return function(wm)
         filled[uuid] = math.max(#d.desktops, 1)
         for i, apps in ipairs(d.desktops) do
           for _, app in ipairs(apps) do
-            if desks[i] then home[app] = desks[i] end
+            if desks[i] then
+              home[app] = desks[i]
+              local list = d.sizes and d.sizes[app]
+              if list and #list > 0 then sizes[app] = { screen = s, list = list } end
+            end
           end
         end
       end
     end
 
     local jobs, across, keys, left = {}, {}, nil, {}
+    local rectOf, perApp = {}, {}
     for _, e in ipairs(found) do
-      local target = home[e.name] or (e.bundle and home[e.bundle])
+      local label = home[e.name] and e.name or (e.bundle and home[e.bundle] and e.bundle)
+      local target = label and home[label]
       if not target then goto continue end
+      e.target = target
+      -- found is in window order, so the nth window takes the nth size.
+      if sizes[label] then
+        perApp[label] = (perApp[label] or 0) + 1
+        local list = sizes[label].list
+        rectOf[e.id] = { screen = sizes[label].screen, unit = list[math.min(perApp[label], #list)] }
+      end
       if e.space == target then
         log("in place: %s window %d on %s", e.name, e.id, describeSpace(target))
       elseif hs.spaces.spaceDisplay(e.space) ~= hs.spaces.spaceDisplay(target) then
@@ -662,11 +704,48 @@ return function(wm)
       if done then done() end
     end
 
+    -- Size every window that reached its desktop. Only windows on a showing
+    -- desktop can be sized, so visit each desktop that has one, those
+    -- showing first.
+    local function sizeWindows(nextStep)
+      local spaces, listed, active = {}, {}, activeSpaces()
+      for _, e in ipairs(found) do
+        local space = rectOf[e.id] and spaceOfWindow(e.id)
+        if space == e.target and not listed[space] then
+          listed[space] = true
+          table.insert(spaces, active[space] and 1 or #spaces + 1, space)
+        end
+      end
+      local i = 0
+      local function nextSpace()
+        i = i + 1
+        local space = spaces[i]
+        if not space then return nextStep() end
+        local function sizeHere()
+          for _, e in ipairs(found) do
+            local r = rectOf[e.id]
+            local win = r and spaceOfWindow(e.id) == space and hs.window.get(e.id)
+            if win then
+              local sf, u = r.screen:frame(), r.unit
+              wm.setFrame(win, { x = sf.x + u[1] * sf.w, y = sf.y + u[2] * sf.h, w = u[3] * sf.w, h = u[4] * sf.h })
+            end
+          end
+          nextSpace()
+        end
+        if activeSpaces()[space] then return sizeHere() end
+        hs.spaces.gotoSpace(space)
+        after(0.8, sizeHere)
+      end
+      nextSpace()
+    end
+
     -- End the same way every time: each display shows its first desktop.
     local function finish()
-      local firsts = {}
-      for uuid in pairs(filled) do firsts[uuid] = userDesktops(uuid)[1] end
-      showSpaces(firsts, finishUp)
+      sizeWindows(function()
+        local firsts = {}
+        for uuid in pairs(filled) do firsts[uuid] = userDesktops(uuid)[1] end
+        showSpaces(firsts, finishUp)
+      end)
     end
 
     if #jobs > 0 then hs.alert.show("Moving windows between desktops, hands off the mouse", 3) end
