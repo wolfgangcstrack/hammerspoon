@@ -215,8 +215,12 @@ return function(wm)
     startRun()
     log("save %s-display map", key())
     scanWindows(guarded(function(found, shown)
-      save(fresh, found)
-      showSpaces(shown, endRun)
+      local message = save(fresh, found)
+      -- An alert stays on the desktop it opened on, so show it once back.
+      showSpaces(shown, function()
+        hs.alert.show(message, 6)
+        endRun()
+      end)
     end))
     return true
   end
@@ -284,8 +288,8 @@ return function(wm)
     data[k] = { savedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"), displays = displays }
     hs.json.write(data, path, true, true)
     log("saved %s-display map (%d kept from before):\n%s", k, kept, summary(displays))
-    hs.alert.show("Saved " .. k .. "-display desktops\n" .. summary(displays)
-      .. (kept > 0 and string.format("\n(%d not running, kept from before)", kept) or ""), 6)
+    return "Saved " .. k .. "-display desktops\n" .. summary(displays)
+      .. (kept > 0 and string.format("\n(%d not running, kept from before)", kept) or "")
   end
 
   -- Apps (by bundle ID or name) the desktop drag below leaves alone; their
