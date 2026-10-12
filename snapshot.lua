@@ -711,7 +711,7 @@ return function(wm)
       local spaces, listed, active = {}, {}, activeSpaces()
       for _, e in ipairs(found) do
         local space = rectOf[e.id] and spaceOfWindow(e.id)
-        if space == e.target and not listed[space] then
+        if space and space == e.target and not listed[space] then
           listed[space] = true
           table.insert(spaces, active[space] and 1 or #spaces + 1, space)
         end
