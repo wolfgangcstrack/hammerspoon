@@ -99,8 +99,8 @@ end
 -- Mission Control or Keyboard Shortcuts entry), so these get reported once
 -- the config has loaded instead of the key just doing nothing.
 wm.failedHotkeys = {}
-function wm.hotkey(mods, key, fn)
-  local hk = hs.hotkey.bind(mods, key, fn)
+function wm.hotkey(mods, key, fn, releasedFn)
+  local hk = hs.hotkey.bind(mods, key, fn, releasedFn)
   if not hk then
     -- Say who owns it: a macOS shortcut (even a disabled one can block the
     -- combination) or, failing that, another running app.
@@ -152,9 +152,23 @@ wm.bind(ca, "left", wm.resize(-0.05, 0))
 wm.bind(ca, "up", wm.resize(0, -0.05))
 wm.bind(ca, "down", wm.resize(0, 0.05))
 
--- Push to an edge, half the screen
-wm.bind(cc, "right", wm.unit(0.5, 0, 0.5, 1))
-wm.bind(cc, "left", wm.unit(0, 0, 0.5, 1))
+-- Push to an edge, half the screen. Pressing the other arrow while one is
+-- still held (left+right) centers the half-width, full-height column.
+local heldArrows = {}
+local function halfOrMiddle(key, other, half)
+  wm.hotkey(cc, key, function()
+    heldArrows[key] = true
+    local win = hs.window.focusedWindow()
+    if not win then return end
+    if heldArrows[other] then
+      win:moveToUnit({ 0.25, 0, 0.5, 1 })
+    else
+      half(win)
+    end
+  end, function() heldArrows[key] = nil end)
+end
+halfOrMiddle("right", "left", wm.unit(0.5, 0, 0.5, 1))
+halfOrMiddle("left", "right", wm.unit(0, 0, 0.5, 1))
 wm.bind(cc, "up", wm.unit(0, 0, 1, 0.5))
 wm.bind(cc, "down", wm.unit(0, 0.5, 1, 0.5))
 
