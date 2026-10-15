@@ -162,27 +162,31 @@ wm.bind(ca, "left", wm.resize(-0.05, 0))
 wm.bind(ca, "up", wm.resize(0, -0.05))
 wm.bind(ca, "down", wm.resize(0, 0.05))
 
--- Push to an edge, half the screen; pressed again on that half, narrow to
--- the outer quarter (a third press goes back to the half). Pressing the
--- other arrow while one is still held (left+right) centers the half-width,
--- full-height column.
+-- Push to an edge, full height. Repeated presses cycle the width through
+-- half, quarter and three quarters of the screen, flush to that edge; from
+-- anywhere else it starts at the half. Pressing the other arrow while one is
+-- still held (left+right) centers the half-width, full-height column.
 local heldArrows = {}
-local function halfOrMiddle(key, other, halfX, quarterX)
+local edgeWidths = { 0.5, 0.25, 0.75 }
+local function edgeCycle(key, other, flushRight)
+  local function rect(w) return { flushRight and 1 - w or 0, 0, w, 1 } end
   wm.hotkey(cc, key, function()
     heldArrows[key] = true
     local win = hs.window.focusedWindow()
     if not win then return end
-    if heldArrows[other] then
-      win:moveToUnit({ 0.25, 0, 0.5, 1 })
-    elseif wm.atUnit(win, halfX, 0, 0.5, 1) then
-      win:moveToUnit({ quarterX, 0, 0.25, 1 })
-    else
-      win:moveToUnit({ halfX, 0, 0.5, 1 })
+    if heldArrows[other] then return win:moveToUnit({ 0.25, 0, 0.5, 1 }) end
+    local nextW = edgeWidths[1]
+    for i, w in ipairs(edgeWidths) do
+      if wm.atUnit(win, table.unpack(rect(w))) then
+        nextW = edgeWidths[i % #edgeWidths + 1]
+        break
+      end
     end
+    win:moveToUnit(rect(nextW))
   end, function() heldArrows[key] = nil end)
 end
-halfOrMiddle("right", "left", 0.5, 0.75)
-halfOrMiddle("left", "right", 0, 0)
+edgeCycle("right", "left", true)
+edgeCycle("left", "right", false)
 wm.bind(cc, "up", wm.unit(0, 0, 1, 0.5))
 wm.bind(cc, "down", wm.unit(0, 0.5, 1, 0.5))
 
