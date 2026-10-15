@@ -56,6 +56,16 @@ function wm.unit(x, y, w, h)
   return function(win) win:moveToUnit({ x, y, w, h }) end
 end
 
+-- Whether the window already sits on a unit rect of its screen. Apps that
+-- size in steps (Terminal's character cells) land a little short, so allow
+-- 2% of the screen either way.
+function wm.atUnit(win, x, y, w, h)
+  local s, f = win:screen():frame(), win:frame()
+  local function near(a, b, len) return math.abs(a - b) <= 0.02 * len end
+  return near(f.x, s.x + x * s.w, s.w) and near(f.y, s.y + y * s.h, s.h)
+    and near(f.w, w * s.w, s.w) and near(f.h, h * s.h, s.h)
+end
+
 -- Slate numbered screens from 0 in macOS's order, primary display first,
 -- which is also the order hs.screen.allScreens() returns.
 function wm.screen(index)
@@ -152,23 +162,27 @@ wm.bind(ca, "left", wm.resize(-0.05, 0))
 wm.bind(ca, "up", wm.resize(0, -0.05))
 wm.bind(ca, "down", wm.resize(0, 0.05))
 
--- Push to an edge, half the screen. Pressing the other arrow while one is
--- still held (left+right) centers the half-width, full-height column.
+-- Push to an edge, half the screen; pressed again on that half, narrow to
+-- the outer quarter (a third press goes back to the half). Pressing the
+-- other arrow while one is still held (left+right) centers the half-width,
+-- full-height column.
 local heldArrows = {}
-local function halfOrMiddle(key, other, half)
+local function halfOrMiddle(key, other, halfX, quarterX)
   wm.hotkey(cc, key, function()
     heldArrows[key] = true
     local win = hs.window.focusedWindow()
     if not win then return end
     if heldArrows[other] then
       win:moveToUnit({ 0.25, 0, 0.5, 1 })
+    elseif wm.atUnit(win, halfX, 0, 0.5, 1) then
+      win:moveToUnit({ quarterX, 0, 0.25, 1 })
     else
-      half(win)
+      win:moveToUnit({ halfX, 0, 0.5, 1 })
     end
   end, function() heldArrows[key] = nil end)
 end
-halfOrMiddle("right", "left", wm.unit(0.5, 0, 0.5, 1))
-halfOrMiddle("left", "right", wm.unit(0, 0, 0.5, 1))
+halfOrMiddle("right", "left", 0.5, 0.75)
+halfOrMiddle("left", "right", 0, 0)
 wm.bind(cc, "up", wm.unit(0, 0, 1, 0.5))
 wm.bind(cc, "down", wm.unit(0, 0.5, 1, 0.5))
 
