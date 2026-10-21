@@ -168,6 +168,7 @@ wm.bind(ca, "down", wm.resize(0, 0.05))
 -- still held (left+right) centers the half-width, full-height column.
 local heldArrows = {}
 local edgeWidths = { 0.5, 0.25, 0.75 }
+local edgeLast = {}
 local function edgeCycle(key, other, flushRight)
   local function rect(w) return { flushRight and 1 - w or 0, 0, w, 1 } end
   wm.hotkey(cc, key, function()
@@ -175,14 +176,22 @@ local function edgeCycle(key, other, flushRight)
     local win = hs.window.focusedWindow()
     if not win then return end
     if heldArrows[other] then return win:moveToUnit({ 0.25, 0, 0.5, 1 }) end
-    local nextW = edgeWidths[1]
-    for i, w in ipairs(edgeWidths) do
-      if wm.atUnit(win, table.unpack(rect(w))) then
-        nextW = edgeWidths[i % #edgeWidths + 1]
-        break
+    -- Where the last press on this window left it. A quarter of a laptop
+    -- screen is narrower than many apps' minimum width, so the window lands
+    -- wider than asked and the frame check below can't recognise it; the
+    -- remembered frame still can.
+    local i
+    local last = edgeLast[win:id()]
+    if last and last.key == key and last.frame:equals(win:frame()) then
+      i = last.i
+    else
+      for j, w in ipairs(edgeWidths) do
+        if wm.atUnit(win, table.unpack(rect(w))) then i = j break end
       end
     end
-    win:moveToUnit(rect(nextW))
+    local nextI = i and i % #edgeWidths + 1 or 1
+    win:moveToUnit(rect(edgeWidths[nextI]))
+    edgeLast[win:id()] = { key = key, i = nextI, frame = win:frame() }
   end, function() heldArrows[key] = nil end)
 end
 edgeCycle("right", "left", true)
