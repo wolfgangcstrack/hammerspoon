@@ -3,25 +3,32 @@
 --
 -- One map per display count, so "laptop alone" and "laptop + monitor" are
 -- separate arrangements. A map lists each display's desktops in order and
--- the apps on each, by app name or bundle ID, plus the size and place of
--- each app's windows as fractions of the screen ([x, y, w, h]):
+-- the apps on each, by app name or bundle ID, and each app's windows, oldest
+-- first: the display (its place in `displays`), the desktop on it, and the
+-- window's size and place as fractions of the screen ([x, y, w, h]):
 --
 --   "2": { "displays": [
 --     { "name": "Built-in Retina Display", "builtin": true,
---       "desktops": [ ["Granola", "Notion", "Slack"], ["Postico 2"] ],
---       "sizes": { "Slack": [[0, 0, 0.5, 1]], ... } },
+--       "desktops": [ ["Granola", "Slack"], ["Google Chrome"] ] },
 --     { "name": "MSI MPG341CQR", "builtin": false,
---       "desktops": [ ["Google Chrome"], ["Claude", "Cursor"] ],
---       "sizes": { "Cursor": [[0.5, 0, 0.5, 1], [0.5, 0, 0.5, 1]], ... } } ] }
+--       "desktops": [ ["Google Chrome"], ["Claude", "Cursor"] ] } ],
+--     "windows": {
+--       "Google Chrome": [ { "display": 2, "desktop": 1, "frame": [0, 0, 1, 1], "id": 4711 },
+--                          { "display": 1, "desktop": 2, "frame": [0, 0, 0.5, 1], "id": 5120 } ],
+--       ... } }
 --
--- Restore moves every window of a listed app to its desktop by position, so
--- the outcome depends only on the map: no window IDs or titles, and desktop 2
--- stays desktop 2 even when nothing on desktop 1 is open. Displays are
--- matched by name, then by role (built-in, or the largest external), so a
--- map saved at one desk restores onto a different monitor at another.
--- An app's windows take its saved sizes in window order (oldest window
--- first), and windows beyond the saved ones take the last; an app with no
--- saved sizes keeps whatever size its windows have.
+-- `desktops` is the summary to read; `windows` is what restore follows. An
+-- app with no `windows` entry (added by hand, or from a map saved before
+-- windows were tracked one by one) goes wholly to the first desktop that
+-- lists it, taking any per-display `sizes` in window order.
+--
+-- Restore moves each window to its desktop by position, so desktop 2 stays
+-- desktop 2 even when nothing on desktop 1 is open. A window still open
+-- since the save (same window ID) goes back to its own place; the app's
+-- other windows take the remaining places in window order, and windows
+-- beyond the saved ones take the last. Displays are matched by name, then
+-- by role (built-in, or the largest external), so a map saved at one desk
+-- restores onto a different monitor at another.
 --
 -- ctrl+alt+cmd+s writes the map from where windows are now (apps not running
 -- keep their saved desktop; +shift forgets them), and ctrl+alt+cmd+r
@@ -35,6 +42,30 @@ return function(wm)
   local function area(screen) local f = screen:fullFrame() return f.w * f.h end
   local function key() return tostring(#hs.screen.allScreens()) end
   local function load() return hs.json.read(path) or {} end
+
+  -- A map's windows by app, oldest first: { display, desktop, frame, id },
+  -- with frame and id optional. Apps listed in `desktops` but missing from
+  -- `windows` get one entry per saved size (or one bare entry) on the first
+  -- desktop that lists them.
+  local function windowsOf(map)
+    local wins = {}
+    for app, list in pairs(map.windows or {}) do wins[app] = list end
+    for di, d in ipairs(map.displays or {}) do
+      for pos, apps in ipairs(d.desktops or {}) do
+        for _, app in ipairs(apps) do
+          if not wins[app] then
+            local list = {}
+            for _, u in ipairs(d.sizes and d.sizes[app] or {}) do
+              list[#list + 1] = { display = di, desktop = pos, frame = u }
+            end
+            if #list == 0 then list[1] = { display = di, desktop = pos } end
+            wins[app] = list
+          end
+        end
+      end
+    end
+    return wins
+  end
 
   -- What the last save or restore did, step by step, in
   -- ~/.hammerspoon/restore.log: desktop moves happen out of sight and too
@@ -219,10 +250,10 @@ return function(wm)
     return table.concat(lines, "\n")
   end
 
-  -- Write this display count's map from where windows are now. An app on
-  -- several desktops goes to the one holding most of its windows, the
-  -- earliest on a tie. Unless `fresh`, apps in the stored map that have no
-  -- window open keep their stored desktop. Reading every desktop takes a
+  -- Write this display count's map from where windows are now, every window
+  -- in its own place, so an app spread over several desktops stays spread.
+  -- Unless `fresh`, apps in the stored map that have no window open keep
+  -- their stored places. Reading every desktop takes a
   -- moment of desktops switching; each display ends on the desktop it was
   -- showing. Returns false while a save or restore is running.
   function wm.saveSnapshot(fresh)
@@ -246,74 +277,63 @@ return function(wm)
     local order = {}
     for i, s in ipairs(screens) do order[s:getUUID()] = i end
 
-    -- app name -> "screen order:desktop position" -> its windows there
-    local counts = {}
+    -- app name -> its windows, oldest first (found is in window order)
+    local windows = {}
     for _, w in ipairs(found) do
       local uuid = hs.spaces.spaceDisplay(w.space)
       local pos = uuid and indexOf(userDesktops(uuid), w.space)
       log("saw %s window %d on %s", w.name, w.id, describeSpace(w.space))
       if pos and order[uuid] then
-        counts[w.name] = counts[w.name] or {}
-        local slot = order[uuid] .. ":" .. pos
-        counts[w.name][slot] = counts[w.name][slot] or {}
-        table.insert(counts[w.name][slot], w)
+        windows[w.name] = windows[w.name] or {}
+        table.insert(windows[w.name], { display = order[uuid], desktop = pos, frame = w.unit, id = w.id })
       end
     end
 
-    local displays, placed = {}, {}
-    for i, s in ipairs(screens) do
-      displays[i] = { name = s:name(), builtin = isBuiltin(s), desktops = {}, sizes = {} }
-    end
-    local function put(d, pos, app)
-      for j = #d.desktops + 1, pos do d.desktops[j] = {} end
-      table.insert(d.desktops[pos], app)
-      placed[app] = true
-    end
-    for _, app in ipairs(sortedKeys(counts)) do
-      local best, bestN
-      local bestWins
-      for slot, wins in pairs(counts[app]) do
-        local si, pos = slot:match("(%d+):(%d+)")
-        si, pos = tonumber(si), tonumber(pos)
-        local n = #wins
-        if not best or n > bestN or (n == bestN and (si < best[1] or (si == best[1] and pos < best[2]))) then
-          best, bestN, bestWins = { si, pos }, n, wins
-        end
-      end
-      put(displays[best[1]], best[2], app)
-      -- Sizes from the windows on that desktop, oldest window first.
-      local sizes = {}
-      for _, w in ipairs(bestWins) do
-        if w.unit then sizes[#sizes + 1] = w.unit end
-      end
-      displays[best[1]].sizes[app] = sizes
-    end
-
-    local kept = 0
-    if not fresh and data[k] and data[k].displays then
-      local used = {}
-      for _, old in ipairs(data[k].displays) do
-        local s = findScreen(old, used)
+    -- Apps not running keep their stored places, carried onto whichever
+    -- display each stored one is now. Their window IDs are gone with them.
+    local kept, old = 0, data[k]
+    if not fresh and old and old.displays then
+      local used, now = {}, {}
+      for di, d in ipairs(old.displays) do
+        local s = findScreen(d, used)
         if s then
           used[s:getUUID()] = true
-          local d = displays[order[s:getUUID()]]
-          for pos, apps in ipairs(old.desktops or {}) do
-            for _, app in ipairs(apps) do
-              if not placed[app] then
-                put(d, pos, app)
-                d.sizes[app] = old.sizes and old.sizes[app]
-                kept = kept + 1
-              end
+          now[di] = order[s:getUUID()]
+        end
+      end
+      for app, list in pairs(windowsOf(old)) do
+        if not windows[app] then
+          local carried = {}
+          for _, e in ipairs(list) do
+            if now[e.display] then
+              carried[#carried + 1] = { display = now[e.display], desktop = e.desktop, frame = e.frame }
             end
+          end
+          if #carried > 0 then
+            windows[app] = carried
+            kept = kept + 1
           end
         end
       end
     end
-    for _, d in ipairs(displays) do
-      for _, apps in ipairs(d.desktops) do table.sort(apps) end
+
+    -- The summary: every app on each desktop it has a window on.
+    local displays, listed = {}, {}
+    for i, s in ipairs(screens) do
+      displays[i] = { name = s:name(), builtin = isBuiltin(s), desktops = {} }
+    end
+    for _, app in ipairs(sortedKeys(windows)) do
+      for _, e in ipairs(windows[app]) do
+        local d, slot = displays[e.display], string.format("%d:%d:%s", e.display, e.desktop, app)
+        if d and not listed[slot] then
+          listed[slot] = true
+          for j = #d.desktops + 1, e.desktop do d.desktops[j] = {} end
+          table.insert(d.desktops[e.desktop], app)
+        end
+      end
     end
 
-    data[k] = { savedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"), displays = displays }
+    data[k] = { savedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"), displays = displays, windows = windows }
     hs.json.write(data, path, true, true)
     log("saved %s-display map (%d kept from before):\n%s", k, kept, summary(displays))
     return "Saved " .. k .. "-display desktops\n" .. summary(displays)
@@ -624,48 +644,74 @@ return function(wm)
 
   restore = function(map, found, done)
 
-    -- App name or bundle ID -> the Space it belongs on, and its saved sizes
-    -- with the display they are fractions of.
-    local home, sizes, filled, used = {}, {}, {}, {}
-    for _, d in ipairs(map.displays) do
+    -- App name or bundle ID -> its saved windows; the desktops each display
+    -- needs, counting windows placed past its summary by hand.
+    local wins = windowsOf(map)
+    local need = {}
+    for _, list in pairs(wins) do
+      for _, e in ipairs(list) do need[e.display] = math.max(need[e.display] or 0, e.desktop) end
+    end
+
+    -- Saved display -> { screen, desks } on the screen it is now.
+    local place, filled, used = {}, {}, {}
+    for di, d in ipairs(map.displays) do
       local s = findScreen(d, used)
       if not s then
         log("no screen for %s; its apps stay put", d.name)
       else
         local uuid = s:getUUID()
         used[uuid] = true
+        local n = math.max(#d.desktops, need[di] or 0)
         local desks = userDesktops(uuid)
-        while #desks < #d.desktops do
+        while #desks < n do
           missionControlOpen = true
           if not hs.spaces.addSpaceToScreen(s, false) then break end
           desks = userDesktops(uuid)
         end
-        filled[uuid] = math.max(#d.desktops, 1)
-        for i, apps in ipairs(d.desktops) do
-          for _, app in ipairs(apps) do
-            if desks[i] then
-              home[app] = desks[i]
-              local list = d.sizes and d.sizes[app]
-              if list and #list > 0 then sizes[app] = { screen = s, list = list } end
-            end
+        filled[uuid] = math.max(n, 1)
+        place[di] = { screen = s, desks = desks }
+      end
+    end
+
+    -- Give every open window of a saved app one of its saved places: the
+    -- window's own if it was open at the save, otherwise the next one left,
+    -- in window order (found is oldest first), and the last one past them.
+    local byApp, slotOf = {}, {}
+    for _, e in ipairs(found) do
+      local label = wins[e.name] and e.name or (e.bundle and wins[e.bundle] and e.bundle)
+      if label then
+        byApp[label] = byApp[label] or {}
+        table.insert(byApp[label], e)
+      end
+    end
+    for label, list in pairs(byApp) do
+      local saved, taken = wins[label], {}
+      for _, e in ipairs(list) do
+        for j, s in ipairs(saved) do
+          if s.id == e.id and not taken[j] then
+            slotOf[e.id], taken[j] = s, true
+            break
           end
+        end
+      end
+      local j = 1
+      for _, e in ipairs(list) do
+        if not slotOf[e.id] then
+          while taken[j] do j = j + 1 end
+          slotOf[e.id], taken[j] = saved[j] or saved[#saved], true
         end
       end
     end
 
     local jobs, across, keys, left = {}, {}, nil, {}
-    local rectOf, perApp = {}, {}
+    local rectOf = {}
     for _, e in ipairs(found) do
-      local label = home[e.name] and e.name or (e.bundle and home[e.bundle] and e.bundle)
-      local target = label and home[label]
+      local slot = slotOf[e.id]
+      local p = slot and place[slot.display]
+      local target = p and p.desks[slot.desktop]
       if not target then goto continue end
       e.target = target
-      -- found is in window order, so the nth window takes the nth size.
-      if sizes[label] then
-        perApp[label] = (perApp[label] or 0) + 1
-        local list = sizes[label].list
-        rectOf[e.id] = { screen = sizes[label].screen, unit = list[math.min(perApp[label], #list)] }
-      end
+      if slot.frame then rectOf[e.id] = { screen = p.screen, unit = slot.frame } end
       if e.space == target then
         log("in place: %s window %d on %s", e.name, e.id, describeSpace(target))
       elseif hs.spaces.spaceDisplay(e.space) ~= hs.spaces.spaceDisplay(target) then
