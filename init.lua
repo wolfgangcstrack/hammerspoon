@@ -167,9 +167,9 @@ wm.bind(ca, "down", wm.resize(0, 0.05))
 -- one section at a time. Outside the grid, left/right push to that edge at
 -- full height, and repeated presses cycle the width through half, quarter
 -- and three quarters, flush to the edge. Pushing out past the grid's left or
--- right edge cycles a half-height window through the other two of a quarter,
--- half and three quarters of the screen's width, then lands on that
--- full-height half. Up/down halve a
+-- right edge cycles a half-height window through the other two of three
+-- quarters, a half and a quarter of the screen's width, narrowing and
+-- wrapping from a quarter to three, then lands on that full-height half. Up/down halve a
 -- full-height edge column's height and keep its width; any other window
 -- drops into the top or bottom section of the column on the side it is
 -- flush with, or the middle one if neither. Pressing up again in a top section (or down in a bottom
@@ -238,7 +238,7 @@ end
 local function outward(win, key, r, j, steps)
   steps = steps or #wideWidths
   if steps == 0 then return toEdge(win, key, 1) end
-  j = j % (#wideWidths + 1) + 1
+  j = (j - 2) % (#wideWidths + 1) + 1 -- narrower; a quarter wraps to three quarters
   if j > 1 then return toWide(win, key, r, j - 1, steps - 1) end
   local c = key == "left" and 1 or 3
   place(win, cellRect(c, r), { cell = { c, r }, steps = steps - 1 })
