@@ -1,7 +1,7 @@
 -- Hammerspoon config: window management ported from slate/.slate.
 --
--- Every Slate binding keeps its key combination, so muscle memory carries
--- over. Machine-local overrides live in ~/.hammerspoon/init.local.lua (start
+-- Slate bindings keep their key combinations, so muscle memory carries over,
+-- except ctrl+1-4: the ctrl+cmd arrows' section grid does their job. Machine-local overrides live in ~/.hammerspoon/init.local.lua (start
 -- from init.local.lua.example), which is loaded LAST: Hammerspoon lets the
 -- most recently bound hotkey shadow an earlier one on the same combination
 -- and logs it in the console, the opposite of Slate's first-bind-wins.
@@ -162,42 +162,88 @@ wm.bind(ca, "left", wm.resize(-0.05, 0))
 wm.bind(ca, "up", wm.resize(0, -0.05))
 wm.bind(ca, "down", wm.resize(0, 0.05))
 
--- Push to an edge, full height. Repeated presses cycle the width through
--- half, quarter and three quarters of the screen, flush to that edge; from
--- anywhere else it starts at the half. Pressing the other arrow while one is
--- still held (left+right) centers the half-width, full-height column.
-local heldArrows = {}
+-- Sections: three columns (a quarter, a half and a quarter of the screen
+-- wide) by two rows (half the height each). ctrl+cmd+arrows move a window
+-- one section at a time. Outside the grid, left/right push to that edge at
+-- full height, and repeated presses cycle the width through half, quarter
+-- and three quarters, flush to the edge; pushing out past the grid's left or
+-- right edge lands on that half. Up/down drop a window into the top or
+-- bottom section of the column on the side it is flush with, or the middle
+-- one if neither. Pressing the other arrow while one is still held
+-- (left+right) centers the half-width, full-height column.
+local gridCols = { { 0, 0.25 }, { 0.25, 0.5 }, { 0.75, 0.25 } }
 local edgeWidths = { 0.5, 0.25, 0.75 }
-local edgeLast = {}
-local function edgeCycle(key, other, flushRight)
-  local function rect(w) return { flushRight and 1 - w or 0, 0, w, 1 } end
+local function cellRect(c, r)
+  return { gridCols[c][1], (r - 1) * 0.5, gridCols[c][2], 0.5 }
+end
+local function edgeRect(key, w) return { key == "right" and 1 - w or 0, 0, w, 1 } end
+
+-- Where the last move left each window. A section or a quarter of a laptop
+-- screen is narrower than many apps' minimum width, so the window lands
+-- wider than asked and a frame check can't recognise it; the remembered
+-- frame still can.
+local placed = {}
+local function place(win, rect, state)
+  win:moveToUnit(rect)
+  state.frame = win:frame()
+  placed[win:id()] = state
+end
+local function toCell(win, c, r) place(win, cellRect(c, r), { cell = { c, r } }) end
+local function toEdge(win, key, i)
+  place(win, edgeRect(key, edgeWidths[i]), { edge = key, i = i })
+end
+
+local function stateOf(win)
+  local last = placed[win:id()]
+  if last and last.frame:equals(win:frame()) then return last end
+  for c = 1, #gridCols do
+    for r = 1, 2 do
+      if wm.atUnit(win, table.unpack(cellRect(c, r))) then return { cell = { c, r } } end
+    end
+  end
+  for _, key in ipairs({ "left", "right" }) do
+    for i, w in ipairs(edgeWidths) do
+      if wm.atUnit(win, table.unpack(edgeRect(key, w))) then return { edge = key, i = i } end
+    end
+  end
+  return {}
+end
+
+local heldArrows = {}
+local function sideways(key, other, dc)
   wm.hotkey(cc, key, function()
     heldArrows[key] = true
     local win = hs.window.focusedWindow()
     if not win then return end
     if heldArrows[other] then return win:moveToUnit({ 0.25, 0, 0.5, 1 }) end
-    -- Where the last press on this window left it. A quarter of a laptop
-    -- screen is narrower than many apps' minimum width, so the window lands
-    -- wider than asked and the frame check below can't recognise it; the
-    -- remembered frame still can.
-    local i
-    local last = edgeLast[win:id()]
-    if last and last.key == key and last.frame:equals(win:frame()) then
-      i = last.i
-    else
-      for j, w in ipairs(edgeWidths) do
-        if wm.atUnit(win, table.unpack(rect(w))) then i = j break end
-      end
+    local st = stateOf(win)
+    if st.cell then
+      local c = st.cell[1] + dc
+      if gridCols[c] then return toCell(win, c, st.cell[2]) end
+      return toEdge(win, key, 1)
     end
-    local nextI = i and i % #edgeWidths + 1 or 1
-    win:moveToUnit(rect(edgeWidths[nextI]))
-    edgeLast[win:id()] = { key = key, i = nextI, frame = win:frame() }
+    toEdge(win, key, st.edge == key and st.i % #edgeWidths + 1 or 1)
   end, function() heldArrows[key] = nil end)
 end
-edgeCycle("right", "left", true)
-edgeCycle("left", "right", false)
-wm.bind(cc, "up", wm.unit(0, 0, 1, 0.5))
-wm.bind(cc, "down", wm.unit(0, 0.5, 1, 0.5))
+sideways("right", "left", 1)
+sideways("left", "right", -1)
+
+local function vertical(key, r)
+  wm.bind(cc, key, function(win)
+    local st = stateOf(win)
+    if st.cell then return toCell(win, st.cell[1], r) end
+    local c = st.edge and (st.edge == "left" and 1 or 3)
+    if not c then
+      local s, f = win:screen():frame(), win:frame()
+      local left = f.x <= s.x + 0.02 * s.w
+      local right = f.x + f.w >= s.x + s.w - 0.02 * s.w
+      c = left and not right and 1 or right and not left and 3 or 2
+    end
+    toCell(win, c, r)
+  end)
+end
+vertical("up", 1)
+vertical("down", 2)
 
 -- Nudge
 wm.bind(csa, "right", wm.nudge(0.05, 0))
@@ -213,12 +259,6 @@ wm.bind(cac, "right", wm.throw("East", true))
 wm.bind(cac, "left", wm.throw("West", true))
 wm.bind(cac, "up", wm.throw("North", true))
 wm.bind(cac, "down", wm.throw("South", true))
-
--- Quarter-screen corners, numbered like Cartesian quadrants
-wm.bind({ "ctrl" }, "1", wm.unit(0.5, 0, 0.5, 0.5))   -- top right
-wm.bind({ "ctrl" }, "2", wm.unit(0, 0, 0.5, 0.5))     -- top left
-wm.bind({ "ctrl" }, "3", wm.unit(0, 0.5, 0.5, 0.5))   -- bottom left
-wm.bind({ "ctrl" }, "4", wm.unit(0.5, 0.5, 0.5, 0.5)) -- bottom right
 
 -- Center at half size; grow or shrink around the window's center
 wm.bind({ "ctrl" }, "5", wm.unit(0.25, 0.25, 0.5, 0.5))
