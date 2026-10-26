@@ -168,8 +168,9 @@ wm.bind(ca, "down", wm.resize(0, 0.05))
 -- full height, and repeated presses cycle the width through half, quarter
 -- and three quarters, flush to the edge. Pushing out past the grid's left or
 -- right edge widens the section to half, then three quarters of the screen
--- at the same height, then lands on that full-height half. Up/down drop a
--- window into the top or bottom section of the column on the side it is
+-- at the same height, then lands on that full-height half. Up/down halve a
+-- full-height edge column's height and keep its width; any other window
+-- drops into the top or bottom section of the column on the side it is
 -- flush with, or the middle one if neither. Pressing up again in a top section (or down in a bottom
 -- one) widens it to the full-width top (or bottom) half; up/down from there
 -- swap halves. Pressing the other arrow while one is still held
@@ -261,14 +262,19 @@ local function vertical(key, r)
     if st.band or row == r then return toBand(win, r) end
     if st.wide then return toWide(win, st.wide, r, st.i) end
     if st.cell then return toCell(win, st.cell[1], r) end
-    local c = st.edge and (st.edge == "left" and 1 or 3)
-    if not c then
-      local s, f = win:screen():frame(), win:frame()
-      local left = f.x <= s.x + 0.02 * s.w
-      local right = f.x + f.w >= s.x + s.w - 0.02 * s.w
-      c = left and not right and 1 or right and not left and 3 or 2
+    -- A full-height edge column keeps its width: a quarter is the corner
+    -- section, a half or three quarters a widened one.
+    if st.edge then
+      local w = edgeWidths[st.i]
+      for i, ww in ipairs(wideWidths) do
+        if ww == w then return toWide(win, st.edge, r, i) end
+      end
+      return toCell(win, st.edge == "left" and 1 or 3, r)
     end
-    toCell(win, c, r)
+    local s, f = win:screen():frame(), win:frame()
+    local left = f.x <= s.x + 0.02 * s.w
+    local right = f.x + f.w >= s.x + s.w - 0.02 * s.w
+    toCell(win, left and not right and 1 or right and not left and 3 or 2, r)
   end)
 end
 vertical("up", 1)
