@@ -167,8 +167,9 @@ wm.bind(ca, "down", wm.resize(0, 0.05))
 -- one section at a time. Outside the grid, left/right push to that edge at
 -- full height, and repeated presses cycle the width through half, quarter
 -- and three quarters, flush to the edge. Pushing out past the grid's left or
--- right edge widens the section to half, then three quarters of the screen
--- at the same height, then lands on that full-height half. Up/down halve a
+-- right edge cycles a half-height window through the other two of a quarter,
+-- half and three quarters of the screen's width, then lands on that
+-- full-height half. Up/down halve a
 -- full-height edge column's height and keep its width; any other window
 -- drops into the top or bottom section of the column on the side it is
 -- flush with, or the middle one if neither. Pressing up again in a top section (or down in a bottom
@@ -194,10 +195,10 @@ local function place(win, rect, state)
   placed[win:id()] = state
 end
 local function toCell(win, c, r) place(win, cellRect(c, r), { cell = { c, r } }) end
-local function toWide(win, key, r, i)
+local function toWide(win, key, r, i, steps)
   local w = wideWidths[i]
   place(win, { key == "right" and 1 - w or 0, (r - 1) * 0.5, w, 0.5 },
-    { wide = key, r = r, i = i })
+    { wide = key, r = r, i = i, steps = steps })
 end
 local function toBand(win, r) place(win, { 0, (r - 1) * 0.5, 1, 0.5 }, { band = r }) end
 local function toEdge(win, key, i)
@@ -230,6 +231,19 @@ local function stateOf(win)
   return {}
 end
 
+-- One outward press on a half-height window flush with `key`'s side, now
+-- at width `j` of a quarter, half and three quarters (the corner section is
+-- the quarter). `steps` is how many presses are left before the full-height
+-- half; a window that arrived any other way gets the full cycle.
+local function outward(win, key, r, j, steps)
+  steps = steps or #wideWidths
+  if steps == 0 then return toEdge(win, key, 1) end
+  j = j % (#wideWidths + 1) + 1
+  if j > 1 then return toWide(win, key, r, j - 1, steps - 1) end
+  local c = key == "left" and 1 or 3
+  place(win, cellRect(c, r), { cell = { c, r }, steps = steps - 1 })
+end
+
 local heldArrows = {}
 local function sideways(key, other, dc)
   wm.hotkey(cc, key, function()
@@ -241,13 +255,12 @@ local function sideways(key, other, dc)
     if st.cell then
       local c = st.cell[1] + dc
       if gridCols[c] then return toCell(win, c, st.cell[2]) end
-      return toWide(win, key, st.cell[2], 1)
+      return outward(win, key, st.cell[2], 1, st.steps)
     end
     if st.wide then
       -- Back inward from a widened corner: the middle section of that row.
       if st.wide ~= key then return toCell(win, 2, st.r) end
-      if wideWidths[st.i + 1] then return toWide(win, key, st.r, st.i + 1) end
-      return toEdge(win, key, 1)
+      return outward(win, key, st.r, st.i + 1, st.steps)
     end
     toEdge(win, key, st.edge == key and st.i % #edgeWidths + 1 or 1)
   end, function() heldArrows[key] = nil end)
