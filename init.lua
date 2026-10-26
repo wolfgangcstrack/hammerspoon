@@ -166,15 +166,17 @@ wm.bind(ca, "down", wm.resize(0, 0.05))
 -- wide) by two rows (half the height each). ctrl+cmd+arrows move a window
 -- one section at a time. Outside the grid, left/right push to that edge at
 -- full height, and repeated presses cycle the width through half, quarter
--- and three quarters, flush to the edge; pushing out past the grid's left or
--- right edge lands on that half. Up/down drop a window into the top or
--- bottom section of the column on the side it is flush with, or the middle
--- one if neither. Pressing up again in a top section (or down in a bottom
+-- and three quarters, flush to the edge. Pushing out past the grid's left or
+-- right edge widens the section to half, then three quarters of the screen
+-- at the same height, then lands on that full-height half. Up/down drop a
+-- window into the top or bottom section of the column on the side it is
+-- flush with, or the middle one if neither. Pressing up again in a top section (or down in a bottom
 -- one) widens it to the full-width top (or bottom) half; up/down from there
 -- swap halves. Pressing the other arrow while one is still held
 -- (left+right) centers the half-width, full-height column.
 local gridCols = { { 0, 0.25 }, { 0.25, 0.5 }, { 0.75, 0.25 } }
 local edgeWidths = { 0.5, 0.25, 0.75 }
+local wideWidths = { 0.5, 0.75 }
 local function cellRect(c, r)
   return { gridCols[c][1], (r - 1) * 0.5, gridCols[c][2], 0.5 }
 end
@@ -191,6 +193,11 @@ local function place(win, rect, state)
   placed[win:id()] = state
 end
 local function toCell(win, c, r) place(win, cellRect(c, r), { cell = { c, r } }) end
+local function toWide(win, key, r, i)
+  local w = wideWidths[i]
+  place(win, { key == "right" and 1 - w or 0, (r - 1) * 0.5, w, 0.5 },
+    { wide = key, r = r, i = i })
+end
 local function toBand(win, r) place(win, { 0, (r - 1) * 0.5, 1, 0.5 }, { band = r }) end
 local function toEdge(win, key, i)
   place(win, edgeRect(key, edgeWidths[i]), { edge = key, i = i })
@@ -206,6 +213,13 @@ local function stateOf(win)
   end
   for r = 1, 2 do
     if wm.atUnit(win, 0, (r - 1) * 0.5, 1, 0.5) then return { band = r } end
+    for _, key in ipairs({ "left", "right" }) do
+      for i, w in ipairs(wideWidths) do
+        if wm.atUnit(win, key == "right" and 1 - w or 0, (r - 1) * 0.5, w, 0.5) then
+          return { wide = key, r = r, i = i }
+        end
+      end
+    end
   end
   for _, key in ipairs({ "left", "right" }) do
     for i, w in ipairs(edgeWidths) do
@@ -226,6 +240,12 @@ local function sideways(key, other, dc)
     if st.cell then
       local c = st.cell[1] + dc
       if gridCols[c] then return toCell(win, c, st.cell[2]) end
+      return toWide(win, key, st.cell[2], 1)
+    end
+    if st.wide then
+      -- Back inward from a widened corner: the middle section of that row.
+      if st.wide ~= key then return toCell(win, 2, st.r) end
+      if wideWidths[st.i + 1] then return toWide(win, key, st.r, st.i + 1) end
       return toEdge(win, key, 1)
     end
     toEdge(win, key, st.edge == key and st.i % #edgeWidths + 1 or 1)
@@ -237,7 +257,9 @@ sideways("left", "right", -1)
 local function vertical(key, r)
   wm.bind(cc, key, function(win)
     local st = stateOf(win)
-    if st.band or st.cell and st.cell[2] == r then return toBand(win, r) end
+    local row = st.cell and st.cell[2] or st.r
+    if st.band or row == r then return toBand(win, r) end
+    if st.wide then return toWide(win, st.wide, r, st.i) end
     if st.cell then return toCell(win, st.cell[1], r) end
     local c = st.edge and (st.edge == "left" and 1 or 3)
     if not c then
