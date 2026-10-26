@@ -169,7 +169,9 @@ wm.bind(ca, "down", wm.resize(0, 0.05))
 -- and three quarters, flush to the edge; pushing out past the grid's left or
 -- right edge lands on that half. Up/down drop a window into the top or
 -- bottom section of the column on the side it is flush with, or the middle
--- one if neither. Pressing the other arrow while one is still held
+-- one if neither. Pressing up again in a top section (or down in a bottom
+-- one) widens it to the full-width top (or bottom) half; up/down from there
+-- swap halves. Pressing the other arrow while one is still held
 -- (left+right) centers the half-width, full-height column.
 local gridCols = { { 0, 0.25 }, { 0.25, 0.5 }, { 0.75, 0.25 } }
 local edgeWidths = { 0.5, 0.25, 0.75 }
@@ -189,6 +191,7 @@ local function place(win, rect, state)
   placed[win:id()] = state
 end
 local function toCell(win, c, r) place(win, cellRect(c, r), { cell = { c, r } }) end
+local function toBand(win, r) place(win, { 0, (r - 1) * 0.5, 1, 0.5 }, { band = r }) end
 local function toEdge(win, key, i)
   place(win, edgeRect(key, edgeWidths[i]), { edge = key, i = i })
 end
@@ -200,6 +203,9 @@ local function stateOf(win)
     for r = 1, 2 do
       if wm.atUnit(win, table.unpack(cellRect(c, r))) then return { cell = { c, r } } end
     end
+  end
+  for r = 1, 2 do
+    if wm.atUnit(win, 0, (r - 1) * 0.5, 1, 0.5) then return { band = r } end
   end
   for _, key in ipairs({ "left", "right" }) do
     for i, w in ipairs(edgeWidths) do
@@ -231,6 +237,7 @@ sideways("left", "right", -1)
 local function vertical(key, r)
   wm.bind(cc, key, function(win)
     local st = stateOf(win)
+    if st.band or st.cell and st.cell[2] == r then return toBand(win, r) end
     if st.cell then return toCell(win, st.cell[1], r) end
     local c = st.edge and (st.edge == "left" and 1 or 3)
     if not c then
