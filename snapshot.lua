@@ -830,7 +830,14 @@ return function(wm)
             local win = r and spaceOfWindow(e.id) == space and hs.window.get(e.id)
             if win then
               local sf, u = r.screen:frame(), r.unit
-              wm.setFrame(win, { x = sf.x + u[1] * sf.w, y = sf.y + u[2] * sf.h, w = u[3] * sf.w, h = u[4] * sf.h })
+              local want = { x = sf.x + u[1] * sf.w, y = sf.y + u[2] * sf.h, w = u[3] * sf.w, h = u[4] * sf.h }
+              wm.setFrame(win, want)
+              -- An app with a minimum size keeps it and overlaps its neighbour.
+              local got = win:frame()
+              local off = math.abs(got.x - want.x) > 2 or math.abs(got.y - want.y) > 2
+                or math.abs(got.w - want.w) > 2 or math.abs(got.h - want.h) > 2
+              log("size %s window %d: want %d,%d %dx%d, got %d,%d %dx%d%s", e.name, e.id,
+                want.x, want.y, want.w, want.h, got.x, got.y, got.w, got.h, off and "  <- off" or "")
             end
           end
           nextSpace()
