@@ -1,13 +1,18 @@
 -- Desktop maps: which apps live on which desktop, and a hotkey to put every
 -- window back there.
 --
--- One map per display count, so "laptop alone" and "laptop + monitor" are
--- separate arrangements. A map lists each display's desktops in order and
+-- One map per set of screens, keyed by count and names ("1: Built-in Retina
+-- Display", "2: Built-in Retina Display + MSI MPG341CQR"), so "laptop
+-- alone", "monitor with the lid closed" and "laptop + monitor" are separate
+-- arrangements: window sizes are fractions of the screen, and a split that
+-- fits a wide monitor can be narrower than an app allows on the laptop.
+-- Screens without a map of their own restore the newest map saved with the
+-- same number of screens, and saving there starts their own. A map lists each display's desktops in order and
 -- the apps on each, by app name or bundle ID, and each app's windows, oldest
 -- first: the display (its place in `displays`), the desktop on it, and the
 -- window's size and place as fractions of the screen ([x, y, w, h]):
 --
---   "2": { "displays": [
+--   "2: Built-in Retina Display + MSI MPG341CQR": { "displays": [
 --     { "name": "Built-in Retina Display", "builtin": true,
 --       "desktops": [ ["Granola", "Slack"], ["Google Chrome"] ] },
 --     { "name": "MSI MPG341CQR", "builtin": false,
@@ -41,8 +46,47 @@ return function(wm)
   local path = hs.configdir .. "/desktops.json"
   local function isBuiltin(screen) return screen:name():match("^Built%-in") ~= nil end
   local function area(screen) local f = screen:fullFrame() return f.w * f.h end
-  local function key() return tostring(#hs.screen.allScreens()) end
-  local function load() return hs.json.read(path) or {} end
+  local function keyOf(names)
+    table.sort(names)
+    return #names .. ": " .. table.concat(names, " + ")
+  end
+  local function key()
+    local names = {}
+    for _, s in ipairs(hs.screen.allScreens()) do names[#names + 1] = s:name() end
+    return keyOf(names)
+  end
+
+  -- Maps from before they were per screen are keyed by count alone ("1");
+  -- they move to the key of the screens they were saved on, unless a newer
+  -- map holds it. Written back on the next save.
+  local function load()
+    local data, legacy = hs.json.read(path) or {}, {}
+    for k, m in pairs(data) do
+      if k:match("^%d+$") then legacy[#legacy + 1] = k end
+    end
+    for _, k in ipairs(legacy) do
+      local m, names = data[k], {}
+      for _, d in ipairs(m.displays or {}) do names[#names + 1] = d.name end
+      local nk = keyOf(names)
+      if not data[nk] then data[nk] = m end
+      data[k] = nil
+    end
+    return data
+  end
+
+  -- The map for the screens now: their own, else the newest saved with as
+  -- many screens. Returns the map and its key.
+  local function mapFor(data)
+    local k = key()
+    if data[k] then return data[k], k end
+    local n, best, bestKey = k:match("^%d+"), nil, nil
+    for mk, m in pairs(data) do
+      if mk:match("^%d+") == n and m.displays and (not best or (m.savedAt or "") > (best.savedAt or "")) then
+        best, bestKey = m, mk
+      end
+    end
+    return best, bestKey
+  end
 
   -- A map's windows by app, oldest first: { display, desktop, frame, id },
   -- with frame and id optional. Apps listed in `desktops` but missing from
@@ -255,7 +299,7 @@ return function(wm)
     return table.concat(lines, "\n")
   end
 
-  -- Write this display count's map from where windows are now, every window
+  -- Write the map for these screens from where windows are now, every window
   -- in its own place, so an app spread over several desktops stays spread.
   -- Unless `fresh`, apps in the stored map that have no window open keep
   -- their stored places. Reading every desktop takes a
@@ -264,7 +308,7 @@ return function(wm)
   function wm.saveSnapshot(fresh)
     if running then return false end
     startRun()
-    log("save %s-display map", key())
+    log("save map for %s", key())
     scanWindows(guarded(function(found, shown)
       local message = save(fresh, found)
       -- An alert stays on the desktop it opened on, so show it once back.
@@ -296,7 +340,8 @@ return function(wm)
 
     -- Apps not running keep their stored places, carried onto whichever
     -- display each stored one is now. Their window IDs are gone with them.
-    local kept, old = 0, data[k]
+    -- A first save on these screens starts from the map they restored.
+    local kept, old = 0, (mapFor(data))
     if not fresh and old and old.displays then
       local used, now = {}, {}
       for di, d in ipairs(old.displays) do
@@ -340,8 +385,8 @@ return function(wm)
 
     data[k] = { savedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"), displays = displays, windows = windows }
     hs.json.write(data, path, true, true)
-    log("saved %s-display map (%d kept from before):\n%s", k, kept, summary(displays))
-    return "Saved " .. k .. "-display desktops\n" .. summary(displays)
+    log("saved map for %s (%d kept from before):\n%s", k, kept, summary(displays))
+    return "Saved desktops for these screens\n" .. summary(displays)
       .. (kept > 0 and string.format("\n(%d not running, kept from before)", kept) or "")
   end
 
@@ -631,18 +676,18 @@ return function(wm)
     hs.alert.show("Stopped partway (" .. why:match("^[^\n]*") .. ")\nDetails in ~/.hammerspoon/restore.log", 10)
   end
 
-  -- Move every window of the apps in this display count's map to its
+  -- Move every window of the apps in the map for these screens to its
   -- desktop, adding desktops where a display has too few, then show each
   -- display's first desktop. Moving between desktops takes a few seconds,
   -- so this returns at once and calls `done` when finished. Returns false
   -- without a map or while a restore is already running. A restore that
   -- errors or runs past two minutes is stopped, with the mouse button let go.
   function wm.restoreSnapshot(done)
-    local map = load()[key()]
+    local map, mapKey = mapFor(load())
     if not (map and map.displays) or running then return false end
     startRun()
     moveErrors, vacated, missionControlOpen = {}, {}, false
-    log("restore %s-display map", key())
+    log("restore map for %s%s", mapKey, mapKey ~= key() and " onto " .. key() or "")
     scanWindows(guarded(function(found) restore(map, found, done) end))
     return true
   end
@@ -827,7 +872,7 @@ return function(wm)
     if running then
       hs.alert.show("Still busy, hands off the mouse")
     elseif not wm.restoreSnapshot() then
-      hs.alert.show("No " .. key() .. "-display desktops saved yet (ctrl+alt+cmd+s)")
+      hs.alert.show("No desktops saved for " .. key():match("^%d+") .. "-display setups yet (ctrl+alt+cmd+s)")
     end
   end)
 end
