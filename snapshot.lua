@@ -27,8 +27,9 @@
 -- since the save (same window ID) goes back to its own place; the app's
 -- other windows take the remaining places in window order, and windows
 -- beyond the saved ones take the last. Displays are matched by name, then
--- by role (built-in, or the largest external), so a map saved at one desk
--- restores onto a different monitor at another.
+-- by role (built-in, or the largest external), then by whatever screen is
+-- left, so a map saved at one desk restores onto a different monitor at
+-- another, and a lid-closed map onto the laptop alone.
 --
 -- ctrl+alt+cmd+s writes the map from where windows are now (apps not running
 -- keep their saved desktop; +shift forgets them), and ctrl+alt+cmd+r
@@ -105,19 +106,23 @@ return function(wm)
   end
 
   -- The screen a saved display is now: same name, else same role (the
-  -- largest one), skipping screens in `used`, display UUID -> true.
+  -- largest one), else the largest left, skipping screens in `used`,
+  -- display UUID -> true. The last step lets a map saved on a monitor with
+  -- the lid closed restore onto the laptop alone, since both count as one
+  -- display.
   local function findScreen(spec, used)
     local screens = hs.screen.allScreens()
     for _, s in ipairs(screens) do
       if s:name() == spec.name and not used[s:getUUID()] then return s end
     end
-    local best
+    local best, any
     for _, s in ipairs(screens) do
-      if not used[s:getUUID()] and isBuiltin(s) == spec.builtin and (not best or area(s) > area(best)) then
-        best = s
+      if not used[s:getUUID()] then
+        if isBuiltin(s) == spec.builtin and (not best or area(s) > area(best)) then best = s end
+        if not any or area(s) > area(any) then any = s end
       end
     end
-    return best
+    return best or any
   end
 
   -- Where a desktop is, for the log and alerts: "MSI MPG341CQR desktop 2".
@@ -659,6 +664,7 @@ return function(wm)
       if not s then
         log("no screen for %s; its apps stay put", d.name)
       else
+        if s:name() ~= d.name then log("%s goes on %s", d.name, s:name()) end
         local uuid = s:getUUID()
         used[uuid] = true
         local n = math.max(#d.desktops, need[di] or 0)
@@ -709,7 +715,13 @@ return function(wm)
       local slot = slotOf[e.id]
       local p = slot and place[slot.display]
       local target = p and p.desks[slot.desktop]
-      if not target then goto continue end
+      if not target then
+        if slot then
+          log("no place for %s window %d (display %d desktop %d)", e.name, e.id, slot.display, slot.desktop)
+          moveErrors[#moveErrors + 1] = e.name .. " (no screen or desktop for it)"
+        end
+        goto continue
+      end
       e.target = target
       if slot.frame then rectOf[e.id] = { screen = p.screen, unit = slot.frame } end
       if e.space == target then
