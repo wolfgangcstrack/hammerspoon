@@ -131,24 +131,6 @@ function wm.bind(mods, key, op)
   end)
 end
 
--- Layouts: app name -> list of operations, applied to that app's windows in
--- order (first operation to the first window, and so on), the way Slate's
--- `|` separated per-window operations. Windows beyond the list are left alone.
--- A layout is a list of these steps, run one after another, so a throw to the
--- right screen can happen before a corner placement measures that screen.
-function wm.applyLayout(steps)
-  for _, step in ipairs(steps) do
-    for appName, ops in pairs(step) do
-      local app = hs.application.get(appName)
-      if app then
-        for i, win in ipairs(app:allWindows()) do
-          if ops[i] and win:isStandard() then ops[i](win) end
-        end
-      end
-    end
-  end
-end
-
 ---------------------------------------------------------------------------
 -- Bindings
 ---------------------------------------------------------------------------
@@ -318,60 +300,8 @@ wm.bind(ca, "s", wm.grow(-0.05))
 wm.hotkey({ "cmd" }, "escape", function() hs.hints.windowHints() end)
 
 ---------------------------------------------------------------------------
--- Layouts, one per display count
+-- Desktop maps
 ---------------------------------------------------------------------------
-
-local u = wm.unit
-local topLeft, topRight = u(0, 0, 0.5, 0.5), u(0.5, 0, 0.5, 0.5)
-local bottomLeft, bottomRight = u(0, 0.5, 0.5, 0.5), u(0.5, 0.5, 0.5, 0.5)
-local leftHalf, rightHalf = u(0, 0, 0.5, 1), u(0.5, 0, 0.5, 1)
-local center = u(0.25, 0.25, 0.5, 0.5)
-
--- On more than one display the chat and monitoring apps go to the last
--- screen and Chrome's first window fills the primary one.
-local function multiDisplay(last)
-  local throwLast = wm.throw(last)
-  return {
-    {
-      ["Docker Desktop"] = { throwLast },
-      ["Slack"] = { throwLast },
-      ["Discord"] = { throwLast },
-      ["Activity Monitor"] = { throwLast },
-      ["Music"] = { throwLast },
-      ["Google Chrome"] = { wm.throw(0, true), throwLast },
-      ["Messages"] = { wm.throw(0, true) },
-    },
-    {
-      ["Docker Desktop"] = { bottomRight },
-      ["Slack"] = { bottomRight },
-      ["Discord"] = { bottomRight },
-      ["Activity Monitor"] = { topRight },
-      ["Music"] = { topRight },
-      ["Google Chrome"] = { wm.throw(0, true), leftHalf },
-      ["Messages"] = { center },
-    },
-  }
-end
-
-wm.layouts = {
-  {
-    {
-      ["Docker Desktop"] = { topLeft },
-      ["Slack"] = { bottomRight },
-      ["Discord"] = { bottomRight },
-      ["Activity Monitor"] = { bottomLeft },
-      ["Music"] = { topRight },
-      ["Google Chrome"] = { wm.throw(0, true), rightHalf },
-      ["Messages"] = { center },
-    },
-  },
-  multiDisplay(1),
-  multiDisplay(2),
-}
-
-for n = 1, 3 do
-  wm.hotkey(cac, tostring(n), function() wm.applyLayout(wm.layouts[n]) end)
-end
 
 -- Desktop maps: ctrl+alt+cmd+s records which desktop each app is on,
 -- ctrl+alt+cmd+r moves them back. See snapshot.lua. Nothing rearranges

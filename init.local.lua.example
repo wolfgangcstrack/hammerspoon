@@ -27,8 +27,3 @@ local cac = { "ctrl", "alt", "cmd" }
 -- (by bundle ID or app name); they stay where they are and are listed in the
 -- alert.
 -- wm.noDrag["com.google.Chrome"] = true
-
--- Add an app to a layout: wm.layouts[n] is the layout for n displays, a list
--- of steps that run in order. Each step maps an app name to the operations
--- for its windows, first operation to the first window.
--- wm.layouts[2][1]["Cursor"] = { wm.throw(1, true) }
