@@ -1,0 +1,7 @@
+# Per-machine files Hammerspoon and this config write next to init.lua.
+init.local.lua
+desktops.json
+restore.log
+window-snapshots.json
+Spoons/
+.DS_Store
