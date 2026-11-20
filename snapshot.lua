@@ -2,7 +2,7 @@
 -- window back there.
 --
 -- One map per set of screens, keyed by count and names ("1: Built-in Retina
--- Display", "2: Built-in Retina Display + MSI MPG341CQR"), so "laptop
+-- Display", "2: Built-in Retina Display + DELL U3423WE"), so "laptop
 -- alone", "monitor with the lid closed" and "laptop + monitor" are separate
 -- arrangements: window sizes are fractions of the screen, and a split that
 -- fits a wide monitor can be narrower than an app allows on the laptop.
@@ -12,14 +12,14 @@
 -- first: the display (its place in `displays`), the desktop on it, and the
 -- window's size and place as fractions of the screen ([x, y, w, h]):
 --
---   "2: Built-in Retina Display + MSI MPG341CQR": { "displays": [
+--   "2: Built-in Retina Display + DELL U3423WE": { "displays": [
 --     { "name": "Built-in Retina Display", "builtin": true,
---       "desktops": [ ["Granola", "Slack"], ["Google Chrome"] ] },
---     { "name": "MSI MPG341CQR", "builtin": false,
---       "desktops": [ ["Google Chrome"], ["Claude", "Cursor"] ] } ],
+--       "desktops": [ ["Mail", "Calendar"], ["Safari"] ] },
+--     { "name": "DELL U3423WE", "builtin": false,
+--       "desktops": [ ["Safari"], ["Terminal", "Notes"] ] } ],
 --     "windows": {
---       "Google Chrome": [ { "display": 2, "desktop": 1, "frame": [0, 0, 1, 1], "id": 4711 },
---                          { "display": 1, "desktop": 2, "frame": [0, 0, 0.5, 1], "id": 5120 } ],
+--       "Safari": [ { "display": 2, "desktop": 1, "frame": [0, 0, 1, 1], "id": 4711 },
+--                   { "display": 1, "desktop": 2, "frame": [0, 0, 0.5, 1], "id": 5120 } ],
 --       ... } }
 --
 -- `desktops` is the summary to read; `windows` is what restore follows. An
@@ -39,8 +39,8 @@
 -- ctrl+alt+cmd+s writes the map from where windows are now (apps not running
 -- keep their saved desktop; +shift forgets them), and ctrl+alt+cmd+r
 -- restores. Nothing runs on its own. The map lives in
--- ~/.hammerspoon/desktops.json, a real file on each machine rather than a
--- link into the repo, and is meant to be edited by hand too.
+-- ~/.hammerspoon/desktops.json, one per machine and never committed, and is
+-- meant to be edited by hand too.
 
 return function(wm)
   local path = hs.configdir .. "/desktops.json"
@@ -169,7 +169,7 @@ return function(wm)
     return best or any
   end
 
-  -- Where a desktop is, for the log and alerts: "MSI MPG341CQR desktop 2".
+  -- Where a desktop is, for the log and alerts: "DELL U3423WE desktop 2".
   local function describeSpace(space)
     local uuid = space and hs.spaces.spaceDisplay(space)
     local screen = uuid and hs.screen.find(uuid)

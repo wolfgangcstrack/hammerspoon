@@ -1,11 +1,7 @@
--- Template for ~/.hammerspoon/init.local.lua -- copy it, do not edit it in place:
+-- Template for ~/.hammerspoon/init.local.lua -- copy it next to init.lua
+-- under that name rather than editing it in place.
 --
---   cp hammerspoon/.hammerspoon/init.local.lua.example \
---      hammerspoon/.hammerspoon/init.local.lua
---   make link PKG=hammerspoon
---
--- hammerspoon/.hammerspoon/init.local.lua is gitignored and holds what is
--- true for one machine only. init.lua loads it after every shared binding and
+-- init.local.lua is gitignored and holds what is true for one machine only. init.lua loads it after every shared binding and
 -- passes in its helper table, so a bind here shadows the shared bind on the
 -- same key combination (the Hammerspoon console logs "Disabled previous
 -- hotkey" when that happens).

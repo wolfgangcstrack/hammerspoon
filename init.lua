@@ -1,4 +1,4 @@
--- Hammerspoon config: window management ported from slate/.slate.
+-- Hammerspoon config: window management ported from Slate.
 --
 -- Slate bindings keep their key combinations, so muscle memory carries over,
 -- except ctrl+1-4: the ctrl+cmd arrows' section grid does their job. Machine-local overrides live in ~/.hammerspoon/init.local.lua (start
@@ -319,8 +319,8 @@ if hs.fs.attributes(localConfig) then
   if chunk then chunk(wm) else hs.showError(err) end
 end
 
--- ~/.hammerspoon/init.lua is a symlink into the dotfiles repo, and edits land
--- on the target, so watch the directory the link resolves to.
+-- ~/.hammerspoon/init.lua may be a symlink, and edits land on its target, so
+-- watch the directory the link resolves to (~/.hammerspoon itself if not).
 local repoDir = hs.fs.pathToAbsolute(hs.configdir .. "/init.lua"):match("(.*)/")
 wm.configWatcher = hs.pathwatcher.new(repoDir, function(paths)
   for _, p in ipairs(paths) do
